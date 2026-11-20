@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+output/*
+!output/.gitkeep
+
+# Input data
+data/
+
+# Scratch
+thing.py
+notes.md
