@@ -4,7 +4,7 @@ import datetime as dt
 from decimal import Decimal
 from enum import Enum
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 ALLOWED_CURRENCIES = {"EUR", "GBP", "USD"}
@@ -61,9 +61,17 @@ class Direction(str, Enum):
 class FxForward(BaseModel):
     """A proposed FX forward hedge trade."""
 
-    currency_pair: str  # e.g. "EURGBP"
+    currency_pair: str  # market convention, e.g. "EURGBP"
     trade_date: dt.date
     delivery_date: dt.date
-    direction: Direction
+    direction: Direction  # applies to the notional currency
     notional_currency: str
-    notional_amount: Decimal
+    notional_amount: Decimal = Field(gt=0)
+
+    @model_validator(mode="after")
+    def check_trade(self) -> "FxForward":
+        if self.delivery_date <= self.trade_date:
+            raise ValueError("delivery_date must be after trade_date")
+        if self.notional_currency not in self.currency_pair:
+            raise ValueError("notional_currency must be one side of currency_pair")
+        return self

@@ -13,13 +13,45 @@ logger = logging.getLogger(__name__)
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 
+def hedge_ratio(text: str) -> float:
+    """argparse type: a fraction of NAV between 0 and 1."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {text!r}")
+    if not 0 <= value <= 1:
+        raise argparse.ArgumentTypeError(f"must be between 0 and 1 (e.g. 0.5 for 50%), got {value}")
+    return value
+
+
+def positive_int(text: str) -> int:
+    """argparse type: a whole number of at least 1."""
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a whole number: {text!r}")
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1, got {value}")
+    return value
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fund IRR, NAV and FX hedge calculator")
     parser.add_argument("input", type=Path, help="Path to the cashflow Excel file")
     parser.add_argument("--fund", default="Fund I", help="Fund to analyse")
     parser.add_argument("--output-dir", type=Path, default=Path("output"))
-    parser.add_argument("--hedge-ratio", type=float, default=1.0)
-    parser.add_argument("--tenor-months", type=int, default=3)
+    parser.add_argument(
+        "--hedge-ratio",
+        type=hedge_ratio,
+        default=1.0,
+        help="Share of NAV exposure to hedge, 0 to 1 (default: 1.0 = 100%%)",
+    )
+    parser.add_argument(
+        "--tenor-months",
+        type=positive_int,
+        default=3,
+        help="Length of each rolling FX forward in months (default: 3)",
+    )
     parser.add_argument(
         "--log-level",
         type=str.upper,
@@ -56,7 +88,7 @@ def main(argv: list[str] | None = None) -> None:
     schedules = analytics.nav_schedules(cashflows, currency_irrs)
 
     trades = analytics.propose_hedges(
-        schedules, base_currency, args.hedge_ratio, args.tenor_months
+        cashflows, currency_irrs, base_currency, args.hedge_ratio, args.tenor_months
     )
 
     excel_io.print_summary(fund_irr, currency_irrs, schedules, trades)
