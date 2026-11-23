@@ -2,6 +2,7 @@
 
 import datetime as dt
 import logging
+import zipfile
 from collections import Counter
 from pathlib import Path
 
@@ -15,17 +16,69 @@ logger = logging.getLogger(__name__)
 
 # --- Input -------------------------------------------------------------------
 
+class InputFileError(Exception):
+    """Raised when the input path is not a readable Excel workbook."""
+
+
 class DataValidationError(Exception):
     """Raised when one or more input rows cannot be turned into a Cashflow."""
 
 
+EXCEL_SUFFIXES = {".xlsx", ".xlsm"}
+# .xlsx/.xlsm files are zip archives; every zip file starts with these bytes.
+ZIP_SIGNATURE = b"PK\x03\x04"
+REQUIRED_COLUMNS = [field.alias for field in Cashflow.model_fields.values()]
+
+
+def check_excel_file(path: Path) -> None:
+    """Fail early, with a clear message, if `path` is not an Excel workbook.
+
+    Checks the extension and the file's first bytes, so a CSV renamed to
+    .xlsx is caught here rather than as a confusing error from deep in pandas.
+    """
+    if not path.exists():
+        raise InputFileError(f"Input file not found: {path}")
+    if not path.is_file():
+        raise InputFileError(f"Input path is not a file: {path}")
+    suffix = path.suffix.lower()
+    if suffix == ".xls":
+        raise InputFileError(
+            f"{path.name} is an old-style .xls workbook, which is not supported. "
+            "Open it in Excel and save it as .xlsx."
+        )
+    if suffix not in EXCEL_SUFFIXES:
+        raise InputFileError(
+            f"Input must be an Excel workbook (.xlsx or .xlsm), got {path.name!r}"
+        )
+    with path.open("rb") as f:
+        if f.read(len(ZIP_SIGNATURE)) != ZIP_SIGNATURE:
+            raise InputFileError(
+                f"{path.name} has an Excel extension but is not a valid Excel workbook "
+                "(it may be a renamed CSV, password-protected or corrupted)"
+            )
+
+
 def read_excel_rows(path: Path) -> list[dict]:
-    """Read the sheet and return one raw dict per row."""
-    # dtype=object stops pandas guessing column types, so all cleaning left 
-    # to pydantic.
+    """Check the file, read the first sheet and return one raw dict per row."""
+    check_excel_file(path)
     logger.info("Reading %s", path)
-    df = pd.read_excel(path, sheet_name=0, dtype=object)
+    # dtype=object stops pandas guessing column types, so all checking is
+    # left to Pydantic.
+    try:
+        df = pd.read_excel(path, sheet_name=0, dtype=object)
+    except (zipfile.BadZipFile, KeyError, ValueError, OSError) as exc:
+        raise InputFileError(f"Could not read {path.name} as an Excel workbook: {exc}") from exc
     logger.info("Read %d rows x %d columns", *df.shape)
+
+    # Checked once here rather than as one Pydantic error per row.
+    missing_columns = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing_columns:
+        raise DataValidationError(
+            f"Missing column(s) {missing_columns} in {path.name}. "
+            f"Found: {[str(c) for c in df.columns]}"
+        )
+    if df.empty:
+        raise DataValidationError(f"{path.name} has a header row but no data rows")
     logger.debug("Columns: %s", list(df.columns))
     missing = df.isna().sum()
     for column, count in missing[missing > 0].items():
