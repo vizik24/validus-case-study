@@ -85,23 +85,23 @@ def xirr(
     raise ValueError(f"XIRR did not converge in {max_iterations} iterations")
 
 
-def _irr_of(cashflows: list[Cashflow], amount_field: str) -> float:
-    return xirr([cf.date for cf in cashflows], [getattr(cf, amount_field) for cf in cashflows])
-
-
 def currency_irrs(cashflows: list[Cashflow]) -> dict[str, float]:
     """IRR per local currency, using local-currency amounts."""
     irrs = {}
     for currency in sorted({cf.local_currency for cf in cashflows}):
         in_currency = [cf for cf in cashflows if cf.local_currency == currency]
-        irrs[currency] = _irr_of(in_currency, "amount_local")
+        dates = [cf.date for cf in in_currency]
+        amounts = [cf.amount_local for cf in in_currency]
+        irrs[currency] = xirr(dates, amounts)
         logger.info("IRR %s (local): %.4f%%", currency, irrs[currency] * 100)
     return irrs
 
 
 def fund_irr(cashflows: list[Cashflow]) -> float:
     """IRR for the whole fund, using base-currency amounts."""
-    irr = _irr_of(cashflows, "amount_base")
+    dates = [cf.date for cf in cashflows]
+    amounts = [cf.amount_base for cf in cashflows]
+    irr = xirr(dates, amounts)
     logger.info("IRR fund (base): %.4f%%", irr * 100)
     return irr
 

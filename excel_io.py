@@ -256,6 +256,7 @@ def load_cashflows(path: Path, fund_name: str) -> list[Cashflow]:
         rows = clean_rows(rows, errors)
         cashflows, errors = validate_rows(rows)
 
+    # All remaining problems: rows still invalid after cleaning, plus duplicate IDs.
     problems = format_errors(rows, errors) + check_duplicate_ids(cashflows)
     if problems:
         raise DataValidationError(
