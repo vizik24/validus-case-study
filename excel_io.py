@@ -183,14 +183,14 @@ CLEANERS = {
 }
 
 
-def clean_rows(rows: list[dict], errors: RowErrors) -> tuple[list[dict], list[str]]:
+def clean_rows(rows: list[dict], errors: RowErrors) -> list[dict]:
     """Apply the matching cleaner to each field that failed validation.
 
-    Returns a new list of rows (the input is not changed) and a log of every
-    value that was changed, for the audit trail.
+    Returns a new list of rows; the input is not changed. Every value that
+    is changed is logged at INFO, which is the audit trail of corrections.
     """
     cleaned = [dict(row) for row in rows]
-    corrections: list[str] = []
+    corrections = 0
     for i, row_errors in errors.items():
         for field in sorted({err["loc"][0] for err in row_errors}):
             cleaner = CLEANERS.get(field)
@@ -201,13 +201,12 @@ def clean_rows(rows: list[dict], errors: RowErrors) -> tuple[list[dict], list[st
             new = cleaner(old)
             if new != old:
                 cleaned[i][field] = new
-                line = f"ID {rows[i].get('ID')}: {field} {old!r} -> {_show(new)}"
-                corrections.append(line)
-                logger.info("Corrected %s", line)
+                corrections += 1
+                logger.info("Corrected ID %s: %s %r -> %s", rows[i].get("ID"), field, old, _show(new))
             else:
                 logger.debug("ID %s: %s %r could not be cleaned", rows[i].get("ID"), field, old)
-    logger.info("Applied %d correction(s)", len(corrections))
-    return cleaned, corrections
+    logger.info("Applied %d correction(s)", corrections)
+    return cleaned
 
 
 def _show(value) -> str:
@@ -240,22 +239,21 @@ def _log_fund_profile(cashflows: list[Cashflow]) -> None:
         logger.debug("  %s net local cashflow: %s", currency, f"{total:,.2f}")
 
 
-def load_cashflows(path: Path, fund_name: str) -> tuple[list[Cashflow], list[str]]:
+def load_cashflows(path: Path, fund_name: str) -> list[Cashflow]:
     """Read -> validate -> (clean failing fields -> validate again) -> filter.
 
-    Returns the fund's cashflows and the log of corrections made. Raises
-    DataValidationError if any row is still invalid after cleaning: silently
-    dropping a cashflow would change the IRR without anyone noticing.
+    Returns the fund's cashflows. Raises DataValidationError if any row is
+    still invalid after cleaning: silently dropping a cashflow would change
+    the IRR without anyone noticing.
     """
     rows = read_excel_rows(path)
     cashflows, errors = validate_rows(rows)
 
-    corrections: list[str] = []
     if errors:
         for line in format_errors(rows, errors):
             logger.debug("Validation error: %s", line)
         logger.info("Cleaning the fields that failed, then validating again")
-        rows, corrections = clean_rows(rows, errors)
+        rows = clean_rows(rows, errors)
         cashflows, errors = validate_rows(rows)
 
     problems = format_errors(rows, errors) + check_duplicate_ids(cashflows)
@@ -263,7 +261,7 @@ def load_cashflows(path: Path, fund_name: str) -> tuple[list[Cashflow], list[str
         raise DataValidationError(
             f"{len(problems)} problem(s) in the input data:\n" + "\n".join(problems)
         )
-    return filter_fund(cashflows, fund_name), corrections
+    return filter_fund(cashflows, fund_name)
 
 
 # --- Output ------------------------------------------------------------------

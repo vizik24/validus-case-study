@@ -69,8 +69,9 @@ class TestCleanAndRevalidate(unittest.TestCase):
         _, errors = excel_io.validate_rows(rows)
         self.assertEqual(list(errors), [1])
 
-        cleaned, corrections = excel_io.clean_rows(rows, errors)
-        self.assertEqual(len(corrections), 2)
+        with self.assertLogs("excel_io", "INFO") as logs:
+            cleaned = excel_io.clean_rows(rows, errors)
+        self.assertEqual(sum("Corrected" in line for line in logs.output), 2)  # audit trail
         self.assertEqual(rows[1]["Local Currency"], "GPB")  # input not mutated
 
         cashflows, errors = excel_io.validate_rows(cleaned)
@@ -80,9 +81,9 @@ class TestCleanAndRevalidate(unittest.TestCase):
     def test_unfixable_row_still_fails(self):
         rows = [make_row(Date="garbage")]
         _, errors = excel_io.validate_rows(rows)
-        cleaned, corrections = excel_io.clean_rows(rows, errors)
+        cleaned = excel_io.clean_rows(rows, errors)
         _, errors = excel_io.validate_rows(cleaned)
-        self.assertEqual(corrections, [])
+        self.assertEqual(cleaned, rows)  # nothing could be fixed
         self.assertIn(0, errors)
 
 

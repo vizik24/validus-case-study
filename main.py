@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     try:
-        cashflows, _corrections = excel_io.load_cashflows(args.input, args.fund)
+        cashflows = excel_io.load_cashflows(args.input, args.fund)
         base_currency = analytics.base_currency(cashflows)
     except (excel_io.InputFileError, excel_io.DataValidationError, ValueError) as exc:
         logger.error("%s", exc)

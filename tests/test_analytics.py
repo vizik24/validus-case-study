@@ -406,7 +406,7 @@ class TestFxForwardModel(unittest.TestCase):
 class TestRealData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.cashflows, _ = excel_io.load_cashflows(DATA_FILE, "Fund I")
+        cls.cashflows = excel_io.load_cashflows(DATA_FILE, "Fund I")
         cls.irrs = analytics.currency_irrs(cls.cashflows)
 
     def test_every_nav_schedule_passes_sanity_checks(self):
