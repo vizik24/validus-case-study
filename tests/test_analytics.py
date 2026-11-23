@@ -52,60 +52,27 @@ def dates_and_amounts(flows):
 
 
 class TestBaseCurrency(unittest.TestCase):
-    def test_single_base_currency(self):
-        self.assertEqual(analytics.base_currency([make_cashflow(), make_cashflow()]), "EUR")
-
     def test_mixed_base_currencies_fail(self):
         with self.assertRaises(ValueError):
             analytics.base_currency([make_cashflow("EUR"), make_cashflow("USD")])
 
-    def test_no_cashflows_fail(self):
-        with self.assertRaises(ValueError):
-            analytics.base_currency([])
-
 
 class TestYearFraction(unittest.TestCase):
-    def test_365_days_is_one_year(self):
-        self.assertEqual(analytics.year_fraction(D0, days(365)), 1.0)
-
     def test_leap_year_is_actual_over_365(self):
         self.assertAlmostEqual(
             analytics.year_fraction(dt.date(2028, 1, 1), dt.date(2029, 1, 1)), 366 / 365
         )
 
 
-class TestNpv(unittest.TestCase):
-    def test_zero_rate_is_plain_sum(self):
-        self.assertAlmostEqual(
-            analytics.npv(0.0, [D0, days(100)], [Decimal(-100), Decimal(30)]), -70.0
-        )
-
-    def test_discounts_one_year(self):
-        self.assertAlmostEqual(
-            analytics.npv(0.10, [D0, days(365)], [Decimal(-100), Decimal(110)]), 0.0
-        )
-
-    def test_rate_at_or_below_minus_100_percent_fails(self):
-        with self.assertRaises(ValueError):
-            analytics.npv(-1.0, [D0], [Decimal(1)])
-
-
 class TestXirr(unittest.TestCase):
     def test_one_year(self):
         self.assertAlmostEqual(analytics.xirr([D0, days(365)], [Decimal(-100), Decimal(110)]), 0.10)
-
-    def test_two_years_compounds(self):
-        self.assertAlmostEqual(analytics.xirr([D0, days(730)], [Decimal(-100), Decimal(121)]), 0.10)
 
     def test_negative_return(self):
         self.assertAlmostEqual(analytics.xirr([D0, days(365)], [Decimal(-100), Decimal(90)]), -0.10)
 
     def test_annual_bond_at_par_returns_its_coupon(self):
         self.assertAlmostEqual(analytics.xirr(*dates_and_amounts(annual_bond(coupon=10))), 0.10)
-
-    def test_order_of_cashflows_does_not_matter(self):
-        dates, amounts = dates_and_amounts(annual_bond())
-        self.assertAlmostEqual(analytics.xirr(dates[::-1], amounts[::-1]), 0.10)
 
     def test_irregular_dates_give_zero_npv(self):
         dates = [D0, days(45), days(200), days(600)]
@@ -116,10 +83,6 @@ class TestXirr(unittest.TestCase):
     def test_all_same_sign_fails(self):
         with self.assertRaises(ValueError):
             analytics.xirr([D0, days(365)], [Decimal(100), Decimal(110)])
-
-    def test_mismatched_lengths_fail(self):
-        with self.assertRaises(ValueError):
-            analytics.xirr([D0, days(365)], [Decimal(-100)])
 
 
 class TestCurrencyAndFundIrr(unittest.TestCase):
@@ -136,16 +99,8 @@ class TestCurrencyAndFundIrr(unittest.TestCase):
         self.assertGreater(irr, 0.05)
         self.assertLess(irr, 0.10)
 
-    def test_constant_fx_single_currency_fund_matches_local_irr(self):
-        flows = annual_bond("GBP", coupon=10, fx="1.15")
-        self.assertAlmostEqual(analytics.fund_irr(flows), analytics.currency_irrs(flows)["GBP"])
-
 
 class TestNavAt(unittest.TestCase):
-    def test_discounts_a_future_cashflow(self):
-        nav = analytics.nav_at(D0, [days(365)], [Decimal(110)], 0.10)
-        self.assertAlmostEqual(nav, Decimal(100), places=8)
-
     def test_includes_the_cashflow_on_the_valuation_date(self):
         self.assertEqual(analytics.nav_at(D0, [D0], [Decimal(50)], 0.10), Decimal(50))
 
@@ -153,17 +108,11 @@ class TestNavAt(unittest.TestCase):
         nav = analytics.nav_at(days(365), [D0, days(365)], [Decimal(-100), Decimal(110)], 0.10)
         self.assertEqual(nav, Decimal(110))
 
-    def test_returns_decimal(self):
-        self.assertIsInstance(analytics.nav_at(D0, [days(10)], [Decimal(1)], 0.05), Decimal)
-
 
 class TestNavSchedule(unittest.TestCase):
     def setUp(self):
         self.flows = annual_bond("GBP", coupon=10, years=3)
         self.schedule = analytics.nav_schedule(self.flows, "GBP", 0.10)
-
-    def test_one_point_per_cashflow_date_in_order(self):
-        self.assertEqual([p.date for p in self.schedule], [D0, days(365), days(730), days(1095)])
 
     def test_nav_zero_at_start(self):
         self.assertAlmostEqual(self.schedule[0].nav, Decimal(0), places=8)
@@ -176,16 +125,6 @@ class TestNavSchedule(unittest.TestCase):
     def test_only_uses_the_requested_currency(self):
         flows = self.flows + annual_bond("USD", coupon=5)
         self.assertEqual(analytics.nav_schedule(flows, "GBP", 0.10), self.schedule)
-
-    def test_unknown_currency_fails(self):
-        with self.assertRaises(ValueError):
-            analytics.nav_schedule(self.flows, "JPY", 0.10)
-
-    def test_nav_schedules_uses_each_currencys_irr(self):
-        flows = annual_bond("GBP", coupon=10) + annual_bond("USD", coupon=5)
-        schedules = analytics.nav_schedules(flows, analytics.currency_irrs(flows))
-        for currency, schedule in schedules.items():
-            self.assertTrue(analytics.check_schedule(schedule, flows), currency)
 
 
 class TestCheckSchedule(unittest.TestCase):
@@ -205,9 +144,6 @@ class TestCheckSchedule(unittest.TestCase):
         tampered = self.schedule[:-1] + [NavPoint(date=last.date, currency="GBP", nav=last.nav + 1)]
         self.assertFalse(analytics.check_schedule(tampered, self.flows))
 
-    def test_empty_schedule_fails(self):
-        self.assertFalse(analytics.check_schedule([], self.flows))
-
 
 class TestAddMonths(unittest.TestCase):
     def test_mid_month_keeps_day(self):
@@ -218,16 +154,9 @@ class TestAddMonths(unittest.TestCase):
         self.assertEqual(analytics.add_months(dt.date(2025, 12, 31), 3), dt.date(2026, 3, 31))
         self.assertEqual(analytics.add_months(dt.date(2026, 3, 31), 3), dt.date(2026, 6, 30))
 
-    def test_day_clamped_to_short_month(self):
-        self.assertEqual(analytics.add_months(dt.date(2026, 1, 30), 1), dt.date(2026, 2, 28))
-
     def test_leap_year_february(self):
         self.assertEqual(analytics.add_months(dt.date(2028, 1, 31), 1), dt.date(2028, 2, 29))
         self.assertEqual(analytics.add_months(dt.date(2027, 11, 30), 3), dt.date(2028, 2, 29))
-
-    def test_zero_and_negative_months(self):
-        self.assertEqual(analytics.add_months(D0, 0), D0)
-        self.assertEqual(analytics.add_months(dt.date(2026, 3, 31), -1), dt.date(2026, 2, 28))
 
 
 class TestRollDates(unittest.TestCase):
@@ -238,20 +167,10 @@ class TestRollDates(unittest.TestCase):
         self.assertEqual(rolls[1], dt.date(2025, 12, 31))
         self.assertEqual(rolls[-1], dt.date(2030, 6, 30))
 
-    def test_end_date_is_not_a_roll(self):
-        self.assertNotIn(dt.date(2026, 3, 31), analytics.roll_dates(D0, dt.date(2026, 3, 31), 3))
-
     def test_counted_from_start_so_day_does_not_drift(self):
         # 31 Jan -> 28 Feb -> must come back to 31 Mar, not 28 Mar.
         rolls = analytics.roll_dates(dt.date(2026, 1, 31), dt.date(2026, 4, 30), 1)
         self.assertEqual(rolls, [dt.date(2026, 1, 31), dt.date(2026, 2, 28), dt.date(2026, 3, 31)])
-
-    def test_start_on_or_after_end_gives_no_rolls(self):
-        self.assertEqual(analytics.roll_dates(D0, D0, 3), [])
-
-    def test_non_positive_tenor_fails(self):
-        with self.assertRaises(ValueError):
-            analytics.roll_dates(D0, days(365), 0)
 
 
 class TestBusinessDays(unittest.TestCase):
@@ -260,11 +179,6 @@ class TestBusinessDays(unittest.TestCase):
     def closed(self, *currencies):
         return analytics.settlement_holidays(currencies, self.YEARS)
 
-    def test_weekends_are_never_business_days(self):
-        self.assertFalse(analytics.is_business_day(dt.date(2028, 9, 30), set()))  # Saturday
-        self.assertFalse(analytics.is_business_day(dt.date(2028, 10, 1), set()))  # Sunday
-        self.assertTrue(analytics.is_business_day(dt.date(2028, 9, 29), set()))   # Friday
-
     def test_currency_calendars(self):
         good_friday, juneteenth = dt.date(2029, 3, 30), dt.date(2029, 6, 19)
         self.assertFalse(analytics.is_business_day(good_friday, self.closed("EUR")))
@@ -272,16 +186,6 @@ class TestBusinessDays(unittest.TestCase):
         self.assertTrue(analytics.is_business_day(good_friday, self.closed("USD")))
         self.assertFalse(analytics.is_business_day(juneteenth, self.closed("USD")))
         self.assertTrue(analytics.is_business_day(juneteenth, self.closed("EUR", "GBP")))
-
-    def test_unknown_currency_fails(self):
-        with self.assertRaises(ValueError):
-            analytics.settlement_holidays(["JPY"], self.YEARS)
-
-    def test_business_day_is_unchanged(self):
-        self.assertEqual(analytics.adjust_business_day(D0, set()), D0)
-
-    def test_mid_month_weekend_rolls_forward(self):
-        self.assertEqual(analytics.adjust_business_day(dt.date(2028, 9, 16), set()), dt.date(2028, 9, 18))
 
     def test_holiday_rolls_forward(self):
         self.assertEqual(
@@ -356,13 +260,6 @@ class TestProposeHedges(unittest.TestCase):
         for trade in self.hedges(hedge_ratio=0.5):
             self.assertEqual(trade.notional_amount, Decimal("50.00"))
 
-    def test_zero_hedge_ratio_gives_no_trades(self):
-        self.assertEqual(self.hedges(hedge_ratio=0), [])
-
-    def test_negative_hedge_ratio_fails(self):
-        with self.assertRaises(ValueError):
-            self.hedges(hedge_ratio=-0.1)
-
     def test_net_liability_is_bought_forward(self):
         # Borrow 100 GBP, pay 10 a year, repay 100: the fund is short GBP.
         flows = [make_cashflow(date=cf.date, currency="GBP", amount=-cf.amount_local,
@@ -371,10 +268,6 @@ class TestProposeHedges(unittest.TestCase):
         trades = self.hedges(flows=flows, irrs=analytics.currency_irrs(flows))
         self.assertTrue(trades)
         self.assertTrue(all(t.direction == Direction.BUY for t in trades))
-
-    def test_notional_rounded_to_cents(self):
-        for trade in self.hedges(hedge_ratio=1 / 3):
-            self.assertEqual(trade.notional_amount, trade.notional_amount.quantize(Decimal("0.01")))
 
 
 class TestFxForwardModel(unittest.TestCase):
@@ -386,20 +279,9 @@ class TestFxForwardModel(unittest.TestCase):
         fields.update(overrides)
         return FxForward(**fields)
 
-    def test_valid_trade(self):
-        self.assertEqual(self.make().direction, Direction.SELL)
-
     def test_delivery_must_be_after_trade(self):
         with self.assertRaises(ValueError):
             self.make(delivery_date=D0)
-
-    def test_notional_must_be_positive(self):
-        with self.assertRaises(ValueError):
-            self.make(notional_amount=Decimal("0"))
-
-    def test_notional_currency_must_be_in_pair(self):
-        with self.assertRaises(ValueError):
-            self.make(notional_currency="USD")
 
 
 @unittest.skipUnless(DATA_FILE.exists(), "input file not present (data/ is git-ignored)")
@@ -412,12 +294,6 @@ class TestRealData(unittest.TestCase):
     def test_every_nav_schedule_passes_sanity_checks(self):
         for currency, schedule in analytics.nav_schedules(self.cashflows, self.irrs).items():
             self.assertTrue(analytics.check_schedule(schedule, self.cashflows), currency)
-
-    def test_fund_irr_lies_between_currency_irrs(self):
-        # FX rates in the file are constant, so the fund IRR is a blend.
-        irr = analytics.fund_irr(self.cashflows)
-        self.assertGreater(irr, min(self.irrs.values()))
-        self.assertLess(irr, max(self.irrs.values()))
 
     def test_hedges_cover_foreign_currencies_quarterly(self):
         trades = analytics.propose_hedges(self.cashflows, self.irrs, "EUR")

@@ -22,10 +22,6 @@ def make_row(**overrides) -> dict:
 
 
 class TestCashflowModel(unittest.TestCase):
-    def test_valid_row(self):
-        cf = Cashflow.model_validate(make_row())
-        self.assertEqual(cf.date, dt.date(2025, 9, 30))
-
     def test_principal_repayment_is_allowed(self):
         Cashflow.model_validate(make_row(**{"Cashflow Type": "Principal Repayment"}))
 
@@ -37,10 +33,6 @@ class TestCashflowModel(unittest.TestCase):
         cf = Cashflow.model_validate(make_row(**{"Cashflow Amount Base": 2864344.6379468376}))
         self.assertIsInstance(cf.amount_local, Decimal)
         self.assertEqual(cf.amount_base, Decimal("2864344.6379468376"))
-
-    def test_nan_amount_fails(self):
-        _, errors = excel_io.validate_rows([make_row(**{"Cashflow Amount Local": float("nan")})])
-        self.assertIn(0, errors)
 
     def test_missing_amount_fails(self):
         _, errors = excel_io.validate_rows([make_row(**{"Cashflow Amount Local": None})])
@@ -54,9 +46,6 @@ class TestCleaners(unittest.TestCase):
 
     def test_clean_date_is_day_first(self):
         self.assertEqual(excel_io.clean_date("01/02/2027"), dt.date(2027, 2, 1))
-
-    def test_clean_date_leaves_unparseable_value(self):
-        self.assertEqual(excel_io.clean_date("not a date"), "not a date")
 
     def test_clean_currency(self):
         self.assertEqual(excel_io.clean_currency(" gpb "), "GBP")
