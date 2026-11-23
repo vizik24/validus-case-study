@@ -1,15 +1,21 @@
 """Input and output: reading/validating the Excel file, printing and writing results."""
 
+import csv
 import datetime as dt
 import logging
+import re
 import zipfile
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 
+import openpyxl
 import pandas as pd
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 from pydantic import ValidationError
 
-from models import Cashflow, FxForward, NavPoint
+from models import Cashflow, Results
 
 logger = logging.getLogger(__name__)
 
@@ -261,25 +267,194 @@ def load_cashflows(path: Path, fund_name: str) -> tuple[list[Cashflow], list[str
 
 
 # --- Output ------------------------------------------------------------------
+# The console, the Excel workbook and the CSV files all show the same three
+# tables, built once by the *_table functions below. Values are rounded here,
+# for output only: IRRs to 10 decimal places, money to 2.
 
-def print_summary(
-    fund_irr: float | None,
-    currency_irrs: dict[str, float] | None,
-    schedules: dict[str, list[NavPoint]] | None,
-    trades: list[FxForward] | None,
-) -> None:
-    """Print a readable summary to the console."""
-    # TODO
-    return None
+OUTPUT_FORMATS = ("excel", "csv")
+IRR_DECIMALS = 10
+MONEY_STEP = Decimal("0.01")
+
+Table = tuple[list[str], list[list]]  # (headers, rows)
 
 
-def write_outputs(
-    output_dir: Path,
-    fund_irr: float | None,
-    currency_irrs: dict[str, float] | None,
-    schedules: dict[str, list[NavPoint]] | None,
-    trades: list[FxForward] | None,
-) -> None:
-    """Write results to files (CSV / Excel) in output_dir."""
-    # TODO
-    return None
+def round_money(value: Decimal) -> Decimal:
+    """Round to 2 decimal places, showing a tiny negative (e.g. a NAV(0) of
+    -0.0001) as 0.00 rather than -0.00."""
+    rounded = value.quantize(MONEY_STEP)
+    return abs(rounded) if rounded == 0 else rounded
+
+
+def irr_table(results: Results) -> Table:
+    """One row for the fund (base-currency amounts), one per currency (local)."""
+    headers = ["Level", "Currency", "IRR"]
+    rows = [["Fund", results.base_currency, round(results.fund_irr, IRR_DECIMALS)]]
+    for currency, irr in sorted(results.currency_irrs.items()):
+        rows.append(["Currency", currency, round(irr, IRR_DECIMALS)])
+    return headers, rows
+
+
+def nav_table(results: Results) -> Table:
+    """Long format: one row per currency and date, NAV in local currency."""
+    headers = ["Currency", "Date", "NAV"]
+    rows = [
+        [currency, point.date, round_money(point.nav)]
+        for currency, schedule in sorted(results.nav_schedules.items())
+        for point in schedule
+    ]
+    return headers, rows
+
+
+def hedge_table(results: Results) -> Table:
+    headers = [
+        "Currency Pair", "Trade Date", "Delivery Date",
+        "Direction", "Notional Currency", "Notional Amount",
+    ]
+    rows = [
+        [t.currency_pair, t.trade_date, t.delivery_date,
+         t.direction.value, t.notional_currency, t.notional_amount]
+        for t in results.hedges
+    ]
+    return headers, rows
+
+
+# Sheet / file name -> table builder. The order is the order of the sheets.
+TABLES = {"IRR": irr_table, "NAV": nav_table, "FX Hedges": hedge_table}
+
+
+# --- Console -----------------------------------------------------------------
+
+def _format_table(headers: list[str], rows: list[list[str]]) -> str:
+    """Plain-text table: text left-aligned, numbers right-aligned."""
+    widths = [max(len(str(x)) for x in column) for column in zip(headers, *rows)]
+
+    def is_number(text: str) -> bool:
+        return bool(re.fullmatch(r"-?[\d,]+(\.\d+)?%?", text))
+
+    def line(cells):
+        return "  ".join(
+            cell.rjust(w) if is_number(cell) else cell.ljust(w)
+            for cell, w in zip(cells, widths)
+        ).rstrip()
+
+    return "\n".join([line(headers), line(["-" * w for w in widths]), *map(line, rows)])
+
+
+def _money(value: Decimal) -> str:
+    return f"{value:,.2f}"
+
+
+def print_summary(results: Results) -> None:
+    """Print the results to stdout (logs go to stderr, so the two never mix)."""
+    print(f"\n=== {results.fund_name}: IRR ===\n")
+    irr_rows = [
+        ["Fund (base amounts)", currency, f"{irr:.4%}"] if level == "Fund"
+        else ["Currency (local amounts)", currency, f"{irr:.4%}"]
+        for level, currency, irr in irr_table(results)[1]
+    ]
+    print(_format_table(["Level", "Currency", "IRR"], irr_rows))
+
+    # Wide layout for the console: one row per date, one column per currency.
+    currencies = sorted(results.nav_schedules)
+    navs = {
+        (p.currency, p.date): round_money(p.nav)
+        for schedule in results.nav_schedules.values() for p in schedule
+    }
+    dates = sorted({d for _, d in navs})
+    print(f"\n=== {results.fund_name}: NAV schedule (local currency) ===\n")
+    print(_format_table(
+        ["Date", *currencies],
+        [[d.isoformat(), *(_money(navs[c, d]) if (c, d) in navs else "" for c in currencies)]
+         for d in dates],
+    ))
+
+    print(f"\n=== {results.fund_name}: FX forward hedges ({len(results.hedges)} trades) ===\n")
+    headers, rows = hedge_table(results)
+    print(_format_table(headers, [
+        [pair, trade.isoformat(), delivery.isoformat(), direction, currency, _money(notional)]
+        for pair, trade, delivery, direction, currency, notional in rows
+    ]))
+    print()
+
+
+# --- Files -------------------------------------------------------------------
+
+def output_stem(fund_name: str) -> str:
+    """File-name prefix for a fund, e.g. "Fund I" -> "fund_i"."""
+    return re.sub(r"[^a-z0-9]+", "_", fund_name.lower()).strip("_") or "fund"
+
+
+def write_outputs(results: Results, output_dir: Path, output_format: str = "excel") -> list[Path]:
+    """Save the three tables to output_dir and return the paths written.
+
+    "excel": one workbook, <fund>_results.xlsx, with sheets IRR, NAV and
+    FX Hedges. "csv": three files, <fund>_irr.csv, <fund>_nav.csv and
+    <fund>_fx_hedges.csv. Existing files with the same names are replaced.
+    """
+    if output_format not in OUTPUT_FORMATS:
+        raise ValueError(f"Output format must be one of {OUTPUT_FORMATS}, got {output_format!r}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    tables = {name: build(results) for name, build in TABLES.items()}
+    stem = output_stem(results.fund_name)
+
+    if output_format == "excel":
+        paths = [_write_workbook(output_dir / f"{stem}_results.xlsx", tables)]
+    else:
+        paths = [
+            _write_csv(output_dir / f"{stem}_{output_stem(name)}.csv", *table)
+            for name, table in tables.items()
+        ]
+    for path in paths:
+        logger.info("Wrote %s", path)
+    return paths
+
+
+def _csv_value(value) -> str:
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return format(value, "f")  # plain digits, never scientific notation
+    return str(value)
+
+
+def _write_csv(path: Path, headers: list[str], rows: list[list]) -> Path:
+    # Fixed "\n" line endings so the same results give the same bytes on any OS.
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, lineterminator="\n")
+        writer.writerow(headers)
+        writer.writerows([[_csv_value(v) for v in row] for row in rows])
+    return path
+
+
+# Excel number formats by column header. Values stay numbers and dates in the
+# workbook; only their display is formatted.
+EXCEL_FORMATS = {
+    "IRR": "0.0000%",
+    "Date": "yyyy-mm-dd",
+    "Trade Date": "yyyy-mm-dd",
+    "Delivery Date": "yyyy-mm-dd",
+    "NAV": "#,##0.00",
+    "Notional Amount": "#,##0.00",
+}
+
+
+def _write_workbook(path: Path, tables: dict[str, Table]) -> Path:
+    workbook = openpyxl.Workbook()
+    workbook.remove(workbook.active)
+    for name, (headers, rows) in tables.items():
+        sheet = workbook.create_sheet(name)
+        sheet.append(headers)
+        for row in rows:
+            sheet.append(row)
+        for cell in sheet[1]:
+            cell.font = Font(bold=True)
+        sheet.freeze_panes = "A2"
+        for column, header in enumerate(headers, start=1):
+            number_format = EXCEL_FORMATS.get(header)
+            if number_format:
+                for (cell,) in sheet.iter_rows(min_row=2, min_col=column, max_col=column):
+                    cell.number_format = number_format
+            width = max(len(header), *(len(_csv_value(r[column - 1])) for r in rows)) if rows else len(header)
+            sheet.column_dimensions[get_column_letter(column)].width = width + 4
+    workbook.save(path)
+    return path

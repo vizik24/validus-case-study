@@ -75,3 +75,14 @@ class FxForward(BaseModel):
         if self.notional_currency not in self.currency_pair:
             raise ValueError("notional_currency must be one side of currency_pair")
         return self
+
+
+class Results(BaseModel):
+    """Everything one run produces for a fund: what gets printed and saved."""
+
+    fund_name: str
+    base_currency: str
+    fund_irr: float
+    currency_irrs: dict[str, float]
+    nav_schedules: dict[str, list[NavPoint]]
+    hedges: list[FxForward]

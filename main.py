@@ -7,6 +7,7 @@ from pathlib import Path
 
 import analytics
 import excel_io
+from models import Results
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,20 @@ def positive_int(text: str) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fund IRR, NAV and FX hedge calculator")
-    parser.add_argument("input", type=Path, help="Path to the cashflow Excel file")
-    parser.add_argument("--fund", default="Fund I", help="Fund to analyse")
-    parser.add_argument("--output-dir", type=Path, default=Path("output"))
+    parser.add_argument("input", type=Path, help="Path to the cashflow Excel file (.xlsx or .xlsm)")
+    parser.add_argument("--fund", default="Fund I", help="Fund to analyse (default: Fund I)")
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("output"),
+        help="Folder for the result files (default: output)",
+    )
+    parser.add_argument(
+        "--output-format",
+        type=str.lower,
+        choices=excel_io.OUTPUT_FORMATS,
+        default="excel",
+        help="excel: one workbook with IRR, NAV and FX Hedges sheets (default); "
+             "csv: one CSV file per table",
+    )
     parser.add_argument(
         "--hedge-ratio",
         type=hedge_ratio,
@@ -64,15 +76,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def configure_logging(level: str) -> None:
     """Send log lines to stderr, so they never mix with printed results."""
-    logging.basicConfig(level=level, format=LOG_FORMAT, datefmt="%H:%M:%S", stream=sys.stderr)
+    # force=True replaces any earlier set-up, so each call to main() (e.g. in
+    # tests) uses its own level and the current stderr.
+    logging.basicConfig(
+        level=level, format=LOG_FORMAT, datefmt="%H:%M:%S", stream=sys.stderr, force=True
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     configure_logging(args.log_level)
     logger.info(
-        "Run started: input=%s fund=%r hedge_ratio=%s tenor_months=%s output_dir=%s",
-        args.input, args.fund, args.hedge_ratio, args.tenor_months, args.output_dir,
+        "Run started: input=%s fund=%r hedge_ratio=%s tenor_months=%s output=%s (%s)",
+        args.input, args.fund, args.hedge_ratio, args.tenor_months,
+        args.output_dir, args.output_format,
     )
 
     try:
@@ -82,17 +99,24 @@ def main(argv: list[str] | None = None) -> None:
         logger.error("%s", exc)
         sys.exit(1)
 
-    fund_irr = analytics.fund_irr(cashflows)
     currency_irrs = analytics.currency_irrs(cashflows)
-
-    schedules = analytics.nav_schedules(cashflows, currency_irrs)
-
-    trades = analytics.propose_hedges(
-        cashflows, currency_irrs, base_currency, args.hedge_ratio, args.tenor_months
+    results = Results(
+        fund_name=args.fund,
+        base_currency=base_currency,
+        fund_irr=analytics.fund_irr(cashflows),
+        currency_irrs=currency_irrs,
+        nav_schedules=analytics.nav_schedules(cashflows, currency_irrs),
+        hedges=analytics.propose_hedges(
+            cashflows, currency_irrs, base_currency, args.hedge_ratio, args.tenor_months
+        ),
     )
 
-    excel_io.print_summary(fund_irr, currency_irrs, schedules, trades)
-    excel_io.write_outputs(args.output_dir, fund_irr, currency_irrs, schedules, trades)
+    excel_io.print_summary(results)
+    try:
+        excel_io.write_outputs(results, args.output_dir, args.output_format)
+    except OSError as exc:  # e.g. the workbook is open in Excel, or no write permission
+        logger.error("Could not write results to %s: %s", args.output_dir, exc)
+        sys.exit(1)
     logger.info("Run finished")
 
 
