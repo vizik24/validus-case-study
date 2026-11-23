@@ -7,6 +7,9 @@ output/*
 # Input data
 data/
 
+# Output data
+/output
+
 # Scratch
 thing.py
 notes.md
