@@ -1,4 +1,9 @@
-"""Calculations: IRR, NAV schedules and FX hedges. Data in, numbers out, no I/O."""
+"""Calculations: IRR, NAV schedules and FX hedges.
+
+Every function here takes validated :class:`~models.Cashflow` objects and
+returns numbers or models. None of them reads or writes files, so they can be
+tested without any input workbook.
+"""
 
 import calendar
 import logging
@@ -16,7 +21,13 @@ logger = logging.getLogger(__name__)
 # --- Fund data --------------------------------------------------------------
 
 def base_currency(cashflows: list[Cashflow]) -> str:
-    """The fund's reporting currency, read from the data. Every cashflow must agree."""
+    """Find the fund's reporting currency from its cashflows.
+
+    :param cashflows: One fund's cashflows.
+    :returns: The base currency they all share, e.g. ``"EUR"``.
+    :raises ValueError: If the cashflows name more than one base currency,
+        or there are no cashflows.
+    """
     currencies = {cf.base_currency for cf in cashflows}
     if len(currencies) != 1:
         raise ValueError(f"Expected one base currency, found {sorted(currencies)}")
@@ -34,12 +45,27 @@ DAYS_IN_YEAR = 365
 
 
 def year_fraction(start: date, end: date) -> float:
-    """Time between two dates in years, actual/365."""
+    """Time between two dates in years, on an actual/365 day count.
+
+    :param start: Earlier date.
+    :param end: Later date.
+    :returns: ``(end - start).days / 365``; negative if ``end`` is earlier.
+    """
     return (end - start).days / DAYS_IN_YEAR
 
 
 def npv(rate: float, dates: list[date], amounts: list[Decimal]) -> float:
-    """Net present value of dated cashflows at an annual rate, as at the earliest date."""
+    """Net present value of dated cashflows, as at the earliest date.
+
+    .. math:: NPV = \\sum_i CF_i / (1 + r)^{(d_i - d_0) / 365}
+
+    :param rate: Annual rate as a fraction (``0.1`` is 10%).
+    :param dates: Date of each cashflow, in any order.
+    :param amounts: Amount of each cashflow, matching ``dates``.
+    :returns: The NPV, as a float.
+    :raises ValueError: If ``rate`` is -100% or less, where the discount
+        factor is undefined.
+    """
     if rate <= -1:
         raise ValueError(f"Rate must be greater than -100%, got {rate}")
     t0 = min(dates)
@@ -57,11 +83,26 @@ def xirr(
     tolerance: float = 1e-12,
     max_iterations: int = 200,
 ) -> float:
-    """The annual rate at which npv(...) == 0, found by bisection.
+    """Find the IRR of dated cashflows: the annual rate at which the NPV is 0.
 
-    Bisection is slower than Newton's method but cannot diverge: as long as the
-    NPV changes sign between `low` and `high`, it always converges. With one
-    outflow followed by inflows (as here) there is exactly one root.
+    This is Excel's ``XIRR``: the IRR measured on actual dates with an
+    actual/365 day count, so the result is an annual rate.
+
+    The root is found by bisection. It is slower than Newton's method but
+    cannot diverge: as long as the NPV changes sign between ``low`` and
+    ``high``, it always converges. With one outflow followed by inflows, as
+    here, there is exactly one root.
+
+    :param dates: Date of each cashflow.
+    :param amounts: Amount of each cashflow, matching ``dates``.
+    :param low: Lowest rate searched.
+    :param high: Highest rate searched.
+    :param tolerance: Stop when the root is known to within this much.
+    :param max_iterations: Give up after this many halvings.
+    :returns: The IRR as a fraction (``0.1`` is 10%).
+    :raises ValueError: If the inputs are empty or of different lengths,
+        the cashflows are all one sign, no root lies between ``low`` and
+        ``high``, or the search does not converge.
     """
     if len(dates) != len(amounts) or not dates:
         raise ValueError("dates and amounts must be non-empty and the same length")
@@ -86,7 +127,16 @@ def xirr(
 
 
 def currency_irrs(cashflows: list[Cashflow]) -> dict[str, float]:
-    """IRR per local currency, using local-currency amounts."""
+    """Calculate the IRR of each currency's positions in that currency.
+
+    Uses the local-currency amounts, so each IRR is the return of the
+    positions themselves, before any FX effect.
+
+    :param cashflows: One fund's cashflows.
+    :returns: IRR per local currency, as fractions, in currency order.
+    :raises ValueError: If a currency's IRR cannot be found (see
+        :func:`xirr`).
+    """
     irrs = {}
     for currency in sorted({cf.local_currency for cf in cashflows}):
         in_currency = [cf for cf in cashflows if cf.local_currency == currency]
@@ -98,7 +148,16 @@ def currency_irrs(cashflows: list[Cashflow]) -> dict[str, float]:
 
 
 def fund_irr(cashflows: list[Cashflow]) -> float:
-    """IRR for the whole fund, using base-currency amounts."""
+    """Calculate the IRR of the whole fund in its base currency.
+
+    Uses the base-currency amounts from the file. Those were converted at
+    fixed FX rates, so this IRR blends the currency IRRs and does not
+    include any FX moves.
+
+    :param cashflows: One fund's cashflows.
+    :returns: The fund IRR as a fraction.
+    :raises ValueError: If the IRR cannot be found (see :func:`xirr`).
+    """
     dates = [cf.date for cf in cashflows]
     amounts = [cf.amount_base for cf in cashflows]
     irr = xirr(dates, amounts)
@@ -124,11 +183,20 @@ def nav_at(
     rate: float,
     include_same_day: bool = True,
 ) -> Decimal:
-    """NAV on one date: PV of the remaining cashflows, discounted at `rate`.
+    """Calculate the NAV on one date: the PV of the cashflows still to come.
 
-    By default a cashflow on the valuation date itself counts as remaining
-    (the brief's convention). With include_same_day=False it is treated as
-    already paid, giving the value just after that day's cashflow.
+    Calculated in Decimal; ``rate`` is converted via ``str`` so the float's
+    binary noise does not leak in.
+
+    :param valuation_date: Date to value on.
+    :param dates: Date of each cashflow.
+    :param amounts: Amount of each cashflow, matching ``dates``.
+    :param rate: Annual discount rate as a fraction, normally the IRR.
+    :param include_same_day: If true (the default, and the brief's
+        convention), a cashflow on ``valuation_date`` counts as still to
+        come, giving the value just *before* that day's cashflow. If false,
+        it counts as already paid, giving the value just *after*.
+    :returns: The NAV, in the same currency as ``amounts``.
     """
     one_plus_rate = 1 + Decimal(str(rate))
     nav = Decimal(0)
@@ -140,7 +208,15 @@ def nav_at(
 
 
 def nav_schedule(cashflows: list[Cashflow], currency: str, rate: float) -> list[NavPoint]:
-    """NAV on each cashflow date for one currency, in local currency."""
+    """Build the NAV schedule for one currency.
+
+    :param cashflows: One fund's cashflows; other currencies are ignored.
+    :param currency: Local currency to value.
+    :param rate: Discount rate, normally that currency's IRR.
+    :returns: One :class:`~models.NavPoint` per distinct cashflow date, in
+        date order, with the NAV in local currency.
+    :raises ValueError: If there are no cashflows in ``currency``.
+    """
     in_currency = [cf for cf in cashflows if cf.local_currency == currency]
     if not in_currency:
         raise ValueError(f"No cashflows in {currency}")
@@ -159,7 +235,16 @@ def nav_schedule(cashflows: list[Cashflow], currency: str, rate: float) -> list[
 def nav_schedules(
     cashflows: list[Cashflow], irrs: dict[str, float]
 ) -> dict[str, list[NavPoint]]:
-    """NAV schedule for every currency, each discounted at its own IRR."""
+    """Build the NAV schedule for every currency, each at its own IRR.
+
+    Each schedule is checked with :func:`check_schedule`. A failure is
+    logged as a warning rather than raised, so the results can still be
+    inspected.
+
+    :param cashflows: One fund's cashflows.
+    :param irrs: IRR per currency, from :func:`currency_irrs`.
+    :returns: NAV schedule per currency.
+    """
     schedules = {}
     for currency, rate in irrs.items():
         schedule = nav_schedule(cashflows, currency, rate)
@@ -176,7 +261,17 @@ def check_schedule(
     cashflows: list[Cashflow],
     tolerance: Decimal = NAV_TOLERANCE,
 ) -> bool:
-    """True if NAV(first date) == 0 and NAV(final date) == the exit cashflow."""
+    """Check a NAV schedule against the brief's two sanity checks.
+
+    The checks are NAV(first date) = 0, and NAV(final date) = the exit
+    value, i.e. the cashflows on the final date.
+
+    :param schedule: One currency's NAV schedule, in date order.
+    :param cashflows: The cashflows the schedule was built from.
+    :param tolerance: Largest difference allowed, in local currency.
+    :returns: True if both checks pass; False if either fails or the
+        schedule is empty.
+    """
     if not schedule:
         return False
     currency = schedule[0].currency
@@ -222,8 +317,13 @@ NOTIONAL_STEP = Decimal("0.01")
 def add_months(d: date, months: int) -> date:
     """Shift a date by whole months.
 
-    A month-end date stays a month-end (30 Sep + 3 = 31 Dec); any other day is
-    clamped to the length of the target month (31 Jan + 1 = 28/29 Feb).
+    A month-end stays a month-end: 30 Sep + 3 months is 31 Dec. Any other
+    day is clamped to the length of the target month: 30 Jan + 1 month is
+    28 Feb (29 in a leap year).
+
+    :param d: Starting date.
+    :param months: Months to add; may be negative.
+    :returns: The shifted date.
     """
     month_index = d.year * 12 + (d.month - 1) + months
     year, month = divmod(month_index, 12)
@@ -235,10 +335,19 @@ def add_months(d: date, months: int) -> date:
 
 
 def roll_dates(start: date, end: date, months: int) -> list[date]:
-    """Dates on which a new hedge is put on: start, start + months, ... before end.
+    """List the dates on which a new hedge is traded.
 
-    Each date is counted from `start` rather than from the previous roll, so a
-    short month can't pull later dates off their day.
+    The dates are ``start``, ``start + months``, ``start + 2 * months`` and
+    so on, up to but not including ``end``. Each is counted from ``start``
+    rather than from the previous roll, so a short month can't pull later
+    dates off their day. Dates are unadjusted; see
+    :func:`adjust_business_day`.
+
+    :param start: First roll date, normally the first cashflow date.
+    :param end: Final date; no roll is made on or after it.
+    :param months: Tenor of each forward, in months.
+    :returns: The roll dates, in order.
+    :raises ValueError: If ``months`` is not positive.
     """
     if months <= 0:
         raise ValueError(f"Tenor must be a positive number of months, got {months}")
@@ -261,7 +370,17 @@ HOLIDAY_CALENDARS = {
 
 
 def settlement_holidays(currencies: Iterable[str], years: Iterable[int]) -> set[date]:
-    """Dates on which any of the currencies cannot settle (excluding weekends)."""
+    """Collect the holidays on which any of the currencies cannot settle.
+
+    Uses the calendars in :data:`HOLIDAY_CALENDARS`. Weekends are not
+    included; :func:`is_business_day` handles those.
+
+    :param currencies: Currencies whose calendars to combine, e.g. both
+        sides of a pair.
+    :param years: Calendar years to cover.
+    :returns: Every holiday in any of the calendars.
+    :raises ValueError: If a currency has no calendar.
+    """
     years = list(years)
     closed: set[date] = set()
     for currency in currencies:
@@ -272,13 +391,27 @@ def settlement_holidays(currencies: Iterable[str], years: Iterable[int]) -> set[
 
 
 def is_business_day(d: date, closed: Collection[date]) -> bool:
+    """Check whether a date is a weekday and not a holiday.
+
+    :param d: Date to check.
+    :param closed: Holidays, from :func:`settlement_holidays`.
+    :returns: True if trades can settle on ``d``.
+    """
     return d.weekday() < 5 and d not in closed
 
 
 def adjust_business_day(d: date, closed: Collection[date]) -> date:
-    """Modified following: the next business day, unless that falls in the next
-    month, in which case the previous business day. Keeps month-end rolls in
-    their own month (Sat 30 Sep -> Fri 29 Sep, not Mon 2 Oct).
+    """Move a date to a business day by the modified-following rule.
+
+    The date moves to the next business day, unless that falls in the next
+    month, in which case it moves to the previous business day instead. This
+    keeps month-end rolls in their own month: Sat 30 Sep 2028 becomes
+    Fri 29 Sep, not Mon 2 Oct.
+
+    :param d: Unadjusted date.
+    :param closed: Holidays, from :func:`settlement_holidays`.
+    :returns: ``d`` if it is already a business day, otherwise the adjusted
+        date.
     """
     following = d
     while not is_business_day(following, closed):
@@ -292,12 +425,33 @@ def adjust_business_day(d: date, closed: Collection[date]) -> date:
 
 
 def exposure_on(d: date, dates: list[date], amounts: list[Decimal], rate: float) -> Decimal:
-    """The NAV to hedge on date d: PV of the cashflows strictly after d."""
+    """Calculate the NAV to hedge from date ``d``.
+
+    This is the NAV just *after* that day's cashflow: the PV of the
+    cashflows strictly after ``d``, which is the value still exposed over
+    the coming period. (The NAV including the day's cashflow is 0 on the
+    investment date, which would leave the first period unhedged.)
+
+    :param d: Roll date.
+    :param dates: Date of each cashflow.
+    :param amounts: Amount of each cashflow, matching ``dates``.
+    :param rate: Discount rate, normally the currency's IRR.
+    :returns: The exposure, in the same currency as ``amounts``.
+    """
     return nav_at(d, dates, amounts, rate, include_same_day=False)
 
 
 def currency_pair(a: str, b: str) -> str:
-    """Market-convention pair name for two currencies, e.g. ("GBP", "EUR") -> "EURGBP"."""
+    """Name the pair of two currencies in market convention.
+
+    The currency earlier in :data:`PAIR_PRIORITY` comes first, so
+    ``("GBP", "EUR")`` gives ``"EURGBP"``. Currencies not in the list come
+    after those that are, alphabetically.
+
+    :param a: One currency.
+    :param b: The other currency.
+    :returns: The six-letter pair, e.g. ``"EURUSD"``.
+    """
     def rank(code: str) -> tuple[int, str]:
         return (PAIR_PRIORITY.index(code) if code in PAIR_PRIORITY else len(PAIR_PRIORITY), code)
     first, second = sorted([a, b], key=rank)
@@ -311,10 +465,29 @@ def propose_hedges(
     hedge_ratio: float = 1.0,
     tenor_months: int = 3,
 ) -> list[FxForward]:
-    """Rolling FX forward trades covering hedge_ratio of each foreign currency's NAV.
+    """Propose rolling FX forwards hedging each foreign currency's NAV.
 
-    `direction` refers to the notional currency: Sell GBP 100m in EURGBP means
-    the fund delivers 100m GBP and receives EUR at the forward rate.
+    For every currency other than the base currency, a forward is traded on
+    each roll date and delivers on the next, the last one delivering on the
+    final cashflow date. Dates are moved to business days on both
+    currencies' calendars. Each notional is ``hedge_ratio`` times the
+    exposure on the *unadjusted* roll date (see :func:`exposure_on`), so a
+    coupon paid at quarter-end is not hedged when a trade is moved a day or
+    two earlier.
+
+    ``direction`` refers to the notional currency: "Sell GBP 100m" in
+    EURGBP means the fund delivers 100m GBP and receives EUR at the forward
+    rate. Periods with no exposure get no trade.
+
+    :param cashflows: One fund's cashflows.
+    :param irrs: IRR per currency, used to value the exposure.
+    :param base_currency: The fund's reporting currency, which is not
+        hedged.
+    :param hedge_ratio: Fraction of NAV to hedge, e.g. ``1.0`` for 100%.
+    :param tenor_months: Length of each forward, in months.
+    :returns: The trades, grouped by currency and in date order.
+    :raises ValueError: If ``hedge_ratio`` is negative, ``tenor_months`` is
+        not positive, or a currency has no holiday calendar.
     """
     if hedge_ratio < 0:
         raise ValueError(f"Hedge ratio must not be negative, got {hedge_ratio}")

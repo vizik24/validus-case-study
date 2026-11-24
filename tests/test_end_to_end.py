@@ -50,11 +50,19 @@ XLSX_VOLATILE_PARTS = {"docProps/core.xml"}
 
 
 def md5_file(path: Path) -> str:
+    """Return the md5 of a file's bytes, as hex."""
     return hashlib.md5(path.read_bytes()).hexdigest()
 
 
 def md5_workbook(path: Path) -> str:
-    """md5 of every part of an .xlsx except its timestamps, in a fixed order."""
+    """Hash a workbook's contents, leaving out its save timestamp.
+
+    Every part of the archive except :data:`XLSX_VOLATILE_PARTS` is hashed,
+    name and bytes, in sorted order.
+
+    :param path: The ``.xlsx`` file.
+    :returns: The md5, as hex.
+    """
     digest = hashlib.md5()
     with zipfile.ZipFile(path) as archive:
         for name in sorted(set(archive.namelist()) - XLSX_VOLATILE_PARTS):
@@ -64,6 +72,12 @@ def md5_workbook(path: Path) -> str:
 
 
 def output_hashes(output_dir: Path) -> dict[str, str]:
+    """Hash every file the program wrote.
+
+    :param output_dir: The ``--output-dir`` of the run.
+    :returns: File name mapped to its md5, using :func:`md5_workbook` for
+        ``.xlsx`` files and :func:`md5_file` for the rest.
+    """
     return {
         path.name: md5_workbook(path) if path.suffix == ".xlsx" else md5_file(path)
         for path in sorted(output_dir.iterdir())
@@ -71,7 +85,11 @@ def output_hashes(output_dir: Path) -> dict[str, str]:
 
 
 def run_main(*args: str) -> tuple[int, str, str]:
-    """Run the program; return (exit code, stdout, stderr)."""
+    """Run the program as the command line would, capturing its output.
+
+    :param args: Command-line arguments; paths are converted to strings.
+    :returns: ``(exit code, stdout, stderr)``.
+    """
     stdout, stderr = StringIO(), StringIO()
     code = 0
     with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -86,6 +104,13 @@ HEADERS = excel_io.REQUIRED_COLUMNS
 
 
 def write_workbook(path: Path, rows: list[list], headers: list[str] = HEADERS) -> Path:
+    """Write an input workbook for a test.
+
+    :param path: File to write.
+    :param rows: Data rows, in the order of ``headers``.
+    :param headers: Header row; defaults to the required columns.
+    :returns: ``path``.
+    """
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.append(headers)
@@ -96,11 +121,14 @@ def write_workbook(path: Path, rows: list[list], headers: list[str] = HEADERS) -
 
 
 def synthetic_rows() -> list[list]:
-    """A small two-fund file with the same kinds of mess as the real one.
+    """Build a small two-fund input with the same kinds of mess as the real one.
 
-    Fund I: a GBP loan (100 at 10%, quarterly) and a EUR loan (50 at 8%), one
-    year each. Fund II: a USD loan that must be filtered out. Row 3 has the
-    GPB typo and row 4 a day-first text date with junk around it.
+    Fund I holds a GBP loan (100 at 10%, paid quarterly) and a EUR loan
+    (50 at 8%), each for one year. Fund II holds a USD loan that must be
+    filtered out. Row 3 has the ``GPB`` typo and row 4 a day-first text date
+    with junk around it.
+
+    :returns: Data rows in the order of :data:`HEADERS`.
     """
     quarter_ends = [dt.datetime(2025, 9, 30), dt.datetime(2025, 12, 31), dt.datetime(2026, 3, 31),
                     dt.datetime(2026, 6, 30), dt.datetime(2026, 9, 30)]
@@ -121,11 +149,19 @@ def synthetic_rows() -> list[list]:
 
 
 class EndToEndTestCase(unittest.TestCase):
+    """Base class: gives each test a temporary folder, removed afterwards."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def run_ok(self, input_path: Path, *extra: str) -> tuple[Path, str]:
+        """Run the program and assert that it succeeded.
+
+        :param input_path: Input workbook.
+        :param extra: Further command-line options.
+        :returns: ``(output folder, stdout)``.
+        """
         output_dir = self.tmp / "out"
         code, stdout, stderr = run_main(
             input_path, "--output-dir", output_dir, "--log-level", "ERROR", *extra
@@ -134,6 +170,11 @@ class EndToEndTestCase(unittest.TestCase):
         return output_dir, stdout
 
     def assert_hashes(self, output_dir: Path, expected: dict[str, str]) -> None:
+        """Assert that the output files match the known-good hashes.
+
+        On failure the message shows the new hashes, to paste into the
+        ``EXPECTED_*`` dicts if the change is intended.
+        """
         actual = output_hashes(output_dir)
         self.assertEqual(actual, expected, f"\nNew hashes, if the change is intended:\n{actual}")
 
@@ -181,6 +222,7 @@ class TestInputFileErrors(EndToEndTestCase):
     """Bad input must stop with exit code 1 and a clear message, no traceback."""
 
     def assert_fails(self, input_path: Path, message: str) -> None:
+        """Assert that a run fails cleanly with ``message`` and writes nothing."""
         code, _, stderr = run_main(input_path, "--output-dir", self.tmp / "out")
         self.assertEqual(code, 1)
         self.assertIn(message, stderr)

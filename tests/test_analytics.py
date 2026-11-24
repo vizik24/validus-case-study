@@ -1,3 +1,8 @@
+"""Unit tests for analytics: base currency, IRR, NAV and FX hedging.
+
+Most tests use small hand-built bonds whose IRR and NAV are known exactly.
+"""
+
 import datetime as dt
 import unittest
 from decimal import Decimal
@@ -20,6 +25,17 @@ def make_cashflow(
     fx: str = "1",
     cashflow_type: str = "Interest",
 ) -> Cashflow:
+    """Build one valid cashflow for Fund I, overriding only what a test needs.
+
+    :param base_currency: The fund's base currency.
+    :param date: Cashflow date.
+    :param currency: Local currency.
+    :param amount: Local amount; a string or int, so it converts to an exact
+        Decimal.
+    :param fx: Rate from local to base; the base amount is ``amount * fx``.
+    :param cashflow_type: Value for the ``Cashflow Type`` column.
+    :returns: The cashflow.
+    """
     amount = Decimal(amount)
     return Cashflow(
         id=1, fund_name="Fund I", date=date, cashflow_type=cashflow_type,
@@ -29,13 +45,22 @@ def make_cashflow(
 
 
 def days(n: int) -> dt.date:
+    """Return the date ``n`` days after :data:`D0`."""
     return D0 + dt.timedelta(days=n)
 
 
 def annual_bond(currency: str = "GBP", coupon: int = 10, years: int = 3, fx: str = "1"):
-    """Invest 100, receive `coupon` every 365 days, get 100 back with the last coupon.
+    """Build a bond whose IRR is known exactly.
 
-    Exactly 365 days apart, so under actual/365 the IRR is exactly coupon%.
+    Invest 100, receive ``coupon`` every 365 days, and get 100 back with the
+    last coupon. The payments are exactly 365 days apart, so on an
+    actual/365 day count the IRR is exactly ``coupon`` percent.
+
+    :param currency: Local currency.
+    :param coupon: Annual coupon per 100 invested.
+    :param years: Number of years to maturity.
+    :param fx: Rate from local to base currency.
+    :returns: The bond's cashflows, in date order.
     """
     flows = [make_cashflow(date=D0, currency=currency, amount=-100, fx=fx, cashflow_type="Investment")]
     for year in range(1, years + 1):
@@ -48,6 +73,7 @@ def annual_bond(currency: str = "GBP", coupon: int = 10, years: int = 3, fx: str
 
 
 def dates_and_amounts(flows):
+    """Split cashflows into the ``(dates, amounts)`` lists the calculations take."""
     return [cf.date for cf in flows], [cf.amount_local for cf in flows]
 
 
@@ -177,6 +203,7 @@ class TestBusinessDays(unittest.TestCase):
     YEARS = range(2028, 2031)
 
     def closed(self, *currencies):
+        """Return the combined holidays of ``currencies`` over :attr:`YEARS`."""
         return analytics.settlement_holidays(currencies, self.YEARS)
 
     def test_currency_calendars(self):
@@ -229,6 +256,7 @@ class TestProposeHedges(unittest.TestCase):
         self.irrs = analytics.currency_irrs(self.flows)
 
     def hedges(self, flows=None, irrs=None, **kwargs):
+        """Propose EUR-based hedges, defaulting to this class's bond and 12-month tenors."""
         kwargs.setdefault("tenor_months", 12)
         return analytics.propose_hedges(flows or self.flows, irrs or self.irrs, "EUR", **kwargs)
 
@@ -272,6 +300,7 @@ class TestProposeHedges(unittest.TestCase):
 
 class TestFxForwardModel(unittest.TestCase):
     def make(self, **overrides):
+        """Build a valid :class:`~models.FxForward`, overriding the given fields."""
         fields = dict(
             currency_pair="EURGBP", trade_date=D0, delivery_date=days(92),
             direction="Sell", notional_currency="GBP", notional_amount=Decimal("1"),
@@ -288,6 +317,7 @@ class TestFxForwardModel(unittest.TestCase):
 class TestRealData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        """Load Fund I from the real file once for the whole class."""
         cls.cashflows = excel_io.load_cashflows(DATA_FILE, "Fund I")
         cls.irrs = analytics.currency_irrs(cls.cashflows)
 

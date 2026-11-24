@@ -1,4 +1,16 @@
-"""Input and output: reading/validating the Excel file, printing and writing results."""
+"""Input and output: everything that touches files or the console.
+
+Input
+    :func:`load_cashflows` reads the Excel sheet, validates each row as a
+    :class:`~models.Cashflow`, repairs the fields that fail, validates again
+    and keeps one fund's rows.
+
+Output
+    :func:`print_summary` prints the results and :func:`write_outputs` saves
+    them, as one Excel workbook or three CSV files. Both show the same three
+    tables, built by :func:`irr_table`, :func:`nav_table` and
+    :func:`hedge_table`.
+"""
 
 import csv
 import datetime as dt
@@ -37,10 +49,16 @@ REQUIRED_COLUMNS = [field.alias for field in Cashflow.model_fields.values()]
 
 
 def check_excel_file(path: Path) -> None:
-    """Fail early, with a clear message, if `path` is not an Excel workbook.
+    """Fail early, with a clear message, if ``path`` is not an Excel workbook.
 
     Checks the extension and the file's first bytes, so a CSV renamed to
-    .xlsx is caught here rather than as a confusing error from deep in pandas.
+    ``.xlsx`` is caught here rather than as a confusing error from deep in
+    pandas.
+
+    :param path: The input file given on the command line.
+    :raises InputFileError: If the file is missing, is a directory, is an old
+        ``.xls`` workbook, has a non-Excel extension, or does not start with
+        the zip signature that every ``.xlsx`` file has.
     """
     if not path.exists():
         raise InputFileError(f"Input file not found: {path}")
@@ -65,7 +83,18 @@ def check_excel_file(path: Path) -> None:
 
 
 def read_excel_rows(path: Path) -> list[dict]:
-    """Check the file, read the first sheet and return one raw dict per row."""
+    """Check the file, then read its first sheet as raw rows.
+
+    Nothing is converted or checked beyond the column headers: every cell is
+    read as-is (``dtype=object``) and empty cells become ``None``, so all
+    value checks are left to Pydantic.
+
+    :param path: The input workbook.
+    :returns: One dict per data row, keyed by column header.
+    :raises InputFileError: If the file is not a readable Excel workbook.
+    :raises DataValidationError: If a required column is missing or the
+        sheet has no data rows.
+    """
     check_excel_file(path)
     logger.info("Reading %s", path)
     # dtype=object stops pandas guessing column types, so all checking is
@@ -101,11 +130,15 @@ RowErrors = dict[int, list[dict]]  # row index -> Pydantic error dicts
 
 
 def validate_rows(rows: list[dict]) -> tuple[list[Cashflow], RowErrors]:
-    """Try to turn every raw row into a Cashflow.
+    """Try to turn every raw row into a :class:`~models.Cashflow`.
 
-    Returns the rows that passed plus the errors for the ones that failed,
-    keyed by row index. Nothing is raised here, so the caller can decide
-    whether to clean and retry or to stop.
+    Nothing is raised here, so the caller can decide whether to clean and
+    retry or to stop.
+
+    :param rows: Raw rows, as returned by :func:`read_excel_rows`.
+    :returns: A pair ``(cashflows, errors)``: the rows that passed, and
+        Pydantic's error dicts for the rows that failed, keyed by their
+        index in ``rows``.
     """
     cashflows: list[Cashflow] = []
     errors: RowErrors = {}
@@ -122,7 +155,13 @@ def validate_rows(rows: list[dict]) -> tuple[list[Cashflow], RowErrors]:
 
 
 def format_errors(rows: list[dict], errors: RowErrors) -> list[str]:
-    """One readable line per error, with its Excel row number and ID."""
+    """Turn validation errors into readable messages.
+
+    :param rows: The rows that were validated.
+    :param errors: Errors from :func:`validate_rows`, keyed by row index.
+    :returns: One line per error, giving the Excel row number (header is
+        row 1), the row's ID, the field, the reason and the bad value.
+    """
     lines = []
     for i, row_errors in errors.items():
         for err in row_errors:
@@ -135,7 +174,14 @@ def format_errors(rows: list[dict], errors: RowErrors) -> list[str]:
 
 
 def check_duplicate_ids(cashflows: list[Cashflow]) -> list[str]:
-    """Needs every row at once, so it can't live in the model."""
+    """Find IDs used by more than one cashflow.
+
+    This check needs every row at once, so it can't live in the model,
+    which sees one row at a time.
+
+    :param cashflows: Validated cashflows.
+    :returns: One message per repeated ID; empty if all IDs are unique.
+    """
     seen: set[int] = set()
     problems = []
     for cf in cashflows:
@@ -155,7 +201,14 @@ CURRENCY_TYPOS = {"GPB": "GBP"}
 
 
 def clean_date(value):
-    """Parse day-first text dates with stray spaces or a trailing backtick."""
+    """Parse a day-first text date with stray spaces, quotes or a backtick.
+
+    Example: ``" 30/09/2027  00:00:00`"`` becomes ``date(2027, 9, 30)``.
+
+    :param value: The raw cell value.
+    :returns: The parsed date, or ``value`` unchanged if it is not a string
+        or matches none of :data:`DATE_FORMATS`.
+    """
     if not isinstance(value, str):
         return value
     text = " ".join(value.strip().strip("`'").split())  # collapse runs of spaces
@@ -168,7 +221,14 @@ def clean_date(value):
 
 
 def clean_currency(value):
-    """Normalise case and whitespace, then fix known typos."""
+    """Normalise case and whitespace, then fix known typos.
+
+    Example: ``" gpb "`` becomes ``"GBP"``. An unknown code such as
+    ``"XYZ"`` is returned upper-cased, and validation then rejects it.
+
+    :param value: The raw cell value.
+    :returns: The cleaned code, or ``value`` unchanged if it is not a string.
+    """
     if not isinstance(value, str):
         return value
     code = value.strip().upper()
@@ -186,8 +246,15 @@ CLEANERS = {
 def clean_rows(rows: list[dict], errors: RowErrors) -> list[dict]:
     """Apply the matching cleaner to each field that failed validation.
 
-    Returns a new list of rows; the input is not changed. Every value that
-    is changed is logged at INFO, which is the audit trail of corrections.
+    Only failing fields are touched, and only those with an entry in
+    :data:`CLEANERS`. Every value that changes is logged at INFO with the
+    row's ID, which is the audit trail of corrections. This function does
+    not decide whether a row is now valid; the next call to
+    :func:`validate_rows` does.
+
+    :param rows: The raw rows that were validated. Not modified.
+    :param errors: Errors from :func:`validate_rows`, keyed by row index.
+    :returns: A copy of ``rows`` with the fixable fields repaired.
     """
     cleaned = [dict(row) for row in rows]
     corrections = 0
@@ -210,12 +277,23 @@ def clean_rows(rows: list[dict], errors: RowErrors) -> list[dict]:
 
 
 def _show(value) -> str:
-    """Readable form for log lines: ISO dates, repr for everything else."""
+    """Format a value for a log line.
+
+    :param value: Any value.
+    :returns: ISO format for dates, ``repr`` for everything else.
+    """
     return value.isoformat() if isinstance(value, dt.date) else repr(value)
 
 
 def filter_fund(cashflows: list[Cashflow], fund_name: str) -> list[Cashflow]:
-    """Keep only the cashflows belonging to one fund."""
+    """Keep only the cashflows belonging to one fund.
+
+    :param cashflows: Validated cashflows for every fund in the file.
+    :param fund_name: Exact fund name, e.g. ``"Fund I"``.
+    :returns: The matching cashflows, in file order.
+    :raises ValueError: If no cashflow has that fund name. The message
+        lists the funds that are in the file.
+    """
     matches = [cf for cf in cashflows if cf.fund_name == fund_name]
     if not matches:
         available = sorted({cf.fund_name for cf in cashflows})
@@ -226,7 +304,13 @@ def filter_fund(cashflows: list[Cashflow], fund_name: str) -> list[Cashflow]:
 
 
 def _log_fund_profile(cashflows: list[Cashflow]) -> None:
-    """Debug-level overview of what the selected fund contains."""
+    """Log an overview of the selected fund at DEBUG level.
+
+    Logs the date range, a count of cashflows by currency and type, and the
+    net local cashflow per currency. Does nothing unless DEBUG is enabled.
+
+    :param cashflows: One fund's cashflows; must not be empty.
+    """
     if not logger.isEnabledFor(logging.DEBUG):
         return
     dates = [cf.date for cf in cashflows]
@@ -240,11 +324,22 @@ def _log_fund_profile(cashflows: list[Cashflow]) -> None:
 
 
 def load_cashflows(path: Path, fund_name: str) -> list[Cashflow]:
-    """Read -> validate -> (clean failing fields -> validate again) -> filter.
+    """Load one fund's cashflows from the input workbook.
 
-    Returns the fund's cashflows. Raises DataValidationError if any row is
-    still invalid after cleaning: silently dropping a cashflow would change
-    the IRR without anyone noticing.
+    The steps are: read, validate, clean the failing fields and validate
+    again (only if anything failed), check for duplicate IDs, then filter to
+    the fund. The whole file is validated, not just the chosen fund, so a
+    bad row anywhere is reported.
+
+    :param path: The input workbook.
+    :param fund_name: Fund to keep, e.g. ``"Fund I"``.
+    :returns: The fund's validated cashflows.
+    :raises InputFileError: If the file is not a readable Excel workbook.
+    :raises DataValidationError: If columns are missing, or any row is still
+        invalid after cleaning, or an ID is repeated. Rows are never dropped
+        silently, because a missing cashflow would change the IRR without
+        anyone noticing.
+    :raises ValueError: If the fund is not in the file.
     """
     rows = read_excel_rows(path)
     cashflows, errors = validate_rows(rows)
@@ -278,14 +373,26 @@ Table = tuple[list[str], list[list]]  # (headers, rows)
 
 
 def round_money(value: Decimal) -> Decimal:
-    """Round to 2 decimal places, showing a tiny negative (e.g. a NAV(0) of
-    -0.0001) as 0.00 rather than -0.00."""
+    """Round a money amount to 2 decimal places for output.
+
+    A tiny negative, such as a NAV(0) of ``-0.0001``, would round to
+    ``-0.00``; it is returned as ``0.00`` instead.
+
+    :param value: The exact amount.
+    :returns: The rounded amount.
+    """
     rounded = value.quantize(MONEY_STEP)
     return abs(rounded) if rounded == 0 else rounded
 
 
 def irr_table(results: Results) -> Table:
-    """One row for the fund (base-currency amounts), one per currency (local)."""
+    """Build the IRR table.
+
+    :param results: The run's results.
+    :returns: Headers ``Level, Currency, IRR`` and one row for the fund (on
+        base-currency amounts) followed by one row per currency (on local
+        amounts). IRRs are fractions rounded to :data:`IRR_DECIMALS` places.
+    """
     headers = ["Level", "Currency", "IRR"]
     rows = [["Fund", results.base_currency, round(results.fund_irr, IRR_DECIMALS)]]
     for currency, irr in sorted(results.currency_irrs.items()):
@@ -294,7 +401,12 @@ def irr_table(results: Results) -> Table:
 
 
 def nav_table(results: Results) -> Table:
-    """Long format: one row per currency and date, NAV in local currency."""
+    """Build the NAV table in long format.
+
+    :param results: The run's results.
+    :returns: Headers ``Currency, Date, NAV`` and one row per currency and
+        date, with the NAV in local currency rounded to 2 decimal places.
+    """
     headers = ["Currency", "Date", "NAV"]
     rows = [
         [currency, point.date, round_money(point.nav)]
@@ -305,6 +417,12 @@ def nav_table(results: Results) -> Table:
 
 
 def hedge_table(results: Results) -> Table:
+    """Build the FX hedge table.
+
+    :param results: The run's results.
+    :returns: One row per proposed forward, with the pair, trade and
+        delivery dates, direction, notional currency and notional amount.
+    """
     headers = [
         "Currency Pair", "Trade Date", "Delivery Date",
         "Direction", "Notional Currency", "Notional Amount",
@@ -324,7 +442,16 @@ TABLES = {"IRR": irr_table, "NAV": nav_table, "FX Hedges": hedge_table}
 # --- Console -----------------------------------------------------------------
 
 def _format_table(headers: list[str], rows: list[list[str]]) -> str:
-    """Plain-text table: text left-aligned, numbers right-aligned."""
+    """Lay out a plain-text table for the console.
+
+    Each column is as wide as its longest cell. Numbers (including
+    percentages and comma-grouped amounts) are right-aligned; other text is
+    left-aligned.
+
+    :param headers: Column headers.
+    :param rows: Rows of already-formatted cell text.
+    :returns: The table as one string: header, a dashed rule, then the rows.
+    """
     widths = [max(len(str(x)) for x in column) for column in zip(headers, *rows)]
 
     def is_number(text: str) -> bool:
@@ -340,11 +467,23 @@ def _format_table(headers: list[str], rows: list[list[str]]) -> str:
 
 
 def _money(value: Decimal) -> str:
+    """Format an amount for the console, e.g. ``1,234,567.89``.
+
+    :param value: The amount.
+    :returns: The amount with thousands separators and 2 decimal places.
+    """
     return f"{value:,.2f}"
 
 
 def print_summary(results: Results) -> None:
-    """Print the results to stdout (logs go to stderr, so the two never mix)."""
+    """Print the IRR, NAV and hedge tables to stdout.
+
+    Logs go to stderr, so the printed results never mix with log lines. The
+    NAV table is printed wide, with one column per currency, which is easier
+    to read on screen than the long format saved to file.
+
+    :param results: The run's results.
+    """
     print(f"\n=== {results.fund_name}: IRR ===\n")
     irr_rows = [
         ["Fund (base amounts)", currency, f"{irr:.4%}"] if level == "Fund"
@@ -379,16 +518,33 @@ def print_summary(results: Results) -> None:
 # --- Files -------------------------------------------------------------------
 
 def output_stem(fund_name: str) -> str:
-    """File-name prefix for a fund, e.g. "Fund I" -> "fund_i"."""
+    """Make a safe file-name prefix from a fund name.
+
+    Example: ``"Fund I"`` becomes ``"fund_i"``.
+
+    :param fund_name: The fund (or table) name.
+    :returns: Lower-case letters and digits joined by underscores, or
+        ``"fund"`` if nothing is left.
+    """
     return re.sub(r"[^a-z0-9]+", "_", fund_name.lower()).strip("_") or "fund"
 
 
 def write_outputs(results: Results, output_dir: Path, output_format: str = "excel") -> list[Path]:
-    """Save the three tables to output_dir and return the paths written.
+    """Save the IRR, NAV and hedge tables to files.
 
-    "excel": one workbook, <fund>_results.xlsx, with sheets IRR, NAV and
-    FX Hedges. "csv": three files, <fund>_irr.csv, <fund>_nav.csv and
-    <fund>_fx_hedges.csv. Existing files with the same names are replaced.
+    ``"excel"`` writes one workbook, ``<fund>_results.xlsx``, with sheets
+    ``IRR``, ``NAV`` and ``FX Hedges``. ``"csv"`` writes three files,
+    ``<fund>_irr.csv``, ``<fund>_nav.csv`` and ``<fund>_fx_hedges.csv``.
+    Existing files with the same names are replaced.
+
+    :param results: The run's results.
+    :param output_dir: Folder to write to; created if it does not exist.
+    :param output_format: ``"excel"`` or ``"csv"``.
+    :returns: The paths written.
+    :raises ValueError: If ``output_format`` is not one of
+        :data:`OUTPUT_FORMATS`.
+    :raises OSError: If a file cannot be written, e.g. because the workbook
+        is open in Excel.
     """
     if output_format not in OUTPUT_FORMATS:
         raise ValueError(f"Output format must be one of {OUTPUT_FORMATS}, got {output_format!r}")
@@ -409,6 +565,12 @@ def write_outputs(results: Results, output_dir: Path, output_format: str = "exce
 
 
 def _csv_value(value) -> str:
+    """Format one cell for a CSV file.
+
+    :param value: A date, Decimal or any other value.
+    :returns: ISO format for dates, plain digits for Decimals (never
+        scientific notation), ``str`` for everything else.
+    """
     if isinstance(value, dt.date):
         return value.isoformat()
     if isinstance(value, Decimal):
@@ -417,7 +579,16 @@ def _csv_value(value) -> str:
 
 
 def _write_csv(path: Path, headers: list[str], rows: list[list]) -> Path:
-    # Fixed "\n" line endings so the same results give the same bytes on any OS.
+    """Write one table as a UTF-8 CSV file.
+
+    Line endings are always ``\\n``, so the same results give the same bytes
+    on any operating system, which the md5 tests rely on.
+
+    :param path: File to write.
+    :param headers: Column headers.
+    :param rows: Table rows.
+    :returns: ``path``.
+    """
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f, lineterminator="\n")
         writer.writerow(headers)
@@ -438,6 +609,16 @@ EXCEL_FORMATS = {
 
 
 def _write_workbook(path: Path, tables: dict[str, Table]) -> Path:
+    """Write the tables to one Excel workbook, one sheet per table.
+
+    Each sheet has a bold, frozen header row and columns sized to their
+    contents. Numbers and dates are stored as real values; only their
+    display is set, from :data:`EXCEL_FORMATS`.
+
+    :param path: Workbook to write.
+    :param tables: Sheet name mapped to ``(headers, rows)``, in sheet order.
+    :returns: ``path``.
+    """
     workbook = openpyxl.Workbook()
     workbook.remove(workbook.active)
     for name, (headers, rows) in tables.items():

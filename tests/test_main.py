@@ -1,3 +1,5 @@
+"""Unit tests for the command-line options."""
+
 import unittest
 from contextlib import redirect_stderr
 from io import StringIO
@@ -7,6 +9,7 @@ import main
 
 class TestParseArgs(unittest.TestCase):
     def parse(self, *extra):
+        """Parse a command line with a dummy input file plus ``extra`` options."""
         return main.parse_args(["input.xlsx", *extra])
 
     def test_defaults_match_the_brief(self):

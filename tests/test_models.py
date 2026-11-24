@@ -1,3 +1,5 @@
+"""Unit tests for the Cashflow model and the cleaning step in excel_io."""
+
 import datetime as dt
 import unittest
 from decimal import Decimal
@@ -7,6 +9,11 @@ from models import Cashflow
 
 
 def make_row(**overrides) -> dict:
+    """Build one raw row as pandas would read it, keyed by Excel header.
+
+    :param overrides: Columns to change, e.g. ``**{"Local Currency": "GPB"}``.
+    :returns: A row that passes validation unless an override breaks it.
+    """
     row = {
         "ID": 1,
         "Fund Name": "Fund I",
