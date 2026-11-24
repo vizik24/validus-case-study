@@ -146,7 +146,7 @@ class TestSyntheticEndToEnd(EndToEndTestCase):
             self.assertIn(heading, stdout)
 
 
-@unittest.skipUnless(DATA_FILE.exists(), "input file not present (data/ is git-ignored)")
+@unittest.skipUnless(DATA_FILE.exists(), "input file not present")
 class TestRealDataEndToEnd(EndToEndTestCase):
     def test_csv_output_matches_known_good_hashes(self):
         output_dir, _ = self.run_ok(DATA_FILE, "--output-format", "csv")

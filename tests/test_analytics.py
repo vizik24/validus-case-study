@@ -298,7 +298,7 @@ class TestFxForwardModel(unittest.TestCase):
             self.make(delivery_date=D0)
 
 
-@unittest.skipUnless(DATA_FILE.exists(), "input file not present (data/ is git-ignored)")
+@unittest.skipUnless(DATA_FILE.exists(), "input file not present")
 class TestRealData(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

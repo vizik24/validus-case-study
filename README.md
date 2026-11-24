@@ -19,7 +19,7 @@ pip install -r requirements.txt
 
 ## Running the program
 
-The input file is not in the repo. Place it at `data/CST_Case_Study_data__1_.xlsx`, then run:
+The case study workbook is included at `data/CST_Case_Study_data__1_.xlsx`. To run the program on it:
 
 ```bash
 python main.py data/CST_Case_Study_data__1_.xlsx
@@ -62,7 +62,7 @@ There are 40 hedge trades: 20 in EURGBP and 20 in EURUSD, each selling the forei
 python -m unittest discover -s tests -t .
 ```
 
-The tests use `unittest` and cover validation and cleaning, IRR, NAV, hedging and the command line. End-to-end tests run the whole program and compare its output files with known-good md5 hashes. The tests that use the real input file are skipped if it isn't in `data/`.
+The tests use `unittest` and cover validation and cleaning, IRR, NAV, hedging and the command line. End-to-end tests run the whole program and compare its output files with known-good md5 hashes.
 
 ## Data corrections
 

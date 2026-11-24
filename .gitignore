@@ -2,8 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 
-# Input data
-data/
+# Input data: only the case study workbook is tracked
+data/*
+!data/CST_Case_Study_data__1_.xlsx
 
 # Output data
 /output
