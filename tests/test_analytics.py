@@ -110,6 +110,12 @@ class TestXirr(unittest.TestCase):
         with self.assertRaises(ValueError):
             analytics.xirr([D0, days(365)], [Decimal(100), Decimal(110)])
 
+    def test_invalid_tolerance_fails(self):
+        flows = [D0, days(365)], [Decimal(-100), Decimal(110)]
+        for tolerance in [0, -1e-12, 1e-20, float("nan"), float("inf"), 11.0]:
+            with self.subTest(tolerance=tolerance), self.assertRaises(ValueError):
+                analytics.xirr(*flows, tolerance=tolerance)
+
 
 class TestCurrencyAndFundIrr(unittest.TestCase):
     def test_each_currency_uses_its_own_cashflows(self):
@@ -138,7 +144,7 @@ class TestNavAt(unittest.TestCase):
 class TestNavSchedule(unittest.TestCase):
     def setUp(self):
         self.flows = annual_bond("GBP", coupon=10, years=3)
-        self.schedule = analytics.nav_schedule(self.flows, "GBP", 0.10)
+        self.schedule = analytics.nav_schedule_by_currency(self.flows, "GBP", 0.10)
 
     def test_nav_zero_at_start(self):
         self.assertAlmostEqual(self.schedule[0].nav, Decimal(0), places=8)
@@ -150,19 +156,19 @@ class TestNavSchedule(unittest.TestCase):
 
     def test_only_uses_the_requested_currency(self):
         flows = self.flows + annual_bond("USD", coupon=5)
-        self.assertEqual(analytics.nav_schedule(flows, "GBP", 0.10), self.schedule)
+        self.assertEqual(analytics.nav_schedule_by_currency(flows, "GBP", 0.10), self.schedule)
 
 
 class TestCheckSchedule(unittest.TestCase):
     def setUp(self):
         self.flows = annual_bond()
-        self.schedule = analytics.nav_schedule(self.flows, "GBP", 0.10)
+        self.schedule = analytics.nav_schedule_by_currency(self.flows, "GBP", 0.10)
 
     def test_valid_schedule_passes(self):
         self.assertTrue(analytics.check_schedule(self.schedule, self.flows))
 
     def test_wrong_rate_fails_nav_zero_check(self):
-        schedule = analytics.nav_schedule(self.flows, "GBP", 0.08)
+        schedule = analytics.nav_schedule_by_currency(self.flows, "GBP", 0.08)
         self.assertFalse(analytics.check_schedule(schedule, self.flows))
 
     def test_wrong_exit_value_fails(self):

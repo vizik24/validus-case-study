@@ -40,10 +40,10 @@ EXPECTED_SYNTHETIC_CSV = {
 EXPECTED_SYNTHETIC_XLSX = {"fund_i_results.xlsx": "d388046133eed34b7e8abec9d97eae09"}
 EXPECTED_REAL_CSV = {
     "fund_i_irr.csv": "61cd453a52dcc1f703782e768f7f917d",
-    "fund_i_nav.csv": "660b109ec6e85f385ead49a4ce00ebb6",
+    "fund_i_nav.csv": "b06a27551419194d170b9fdb2a1a8ca9",
     "fund_i_fx_hedges.csv": "699550ffd417d6a4733768afac6fa63b",
 }
-EXPECTED_REAL_XLSX = {"fund_i_results.xlsx": "8322772b33e98c33f34fc0cd9b81b0c1"}
+EXPECTED_REAL_XLSX = {"fund_i_results.xlsx": "b0ce566fdc2b06093fe270599afed1e8"}
 
 # Parts of an .xlsx that change on every save (timestamps), so are not hashed.
 XLSX_VOLATILE_PARTS = {"docProps/core.xml"}

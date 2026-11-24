@@ -7,6 +7,7 @@ tested without any input workbook.
 
 import calendar
 import logging
+import math
 from collections.abc import Collection, Iterable
 from datetime import date, timedelta
 from decimal import Decimal
@@ -80,50 +81,59 @@ def xirr(
     amounts: list[Decimal],
     low: float = -0.99,
     high: float = 10.0,
-    tolerance: float = 1e-12,
-    max_iterations: int = 200,
+    tolerance: float = 1e-14,
 ) -> float:
-    """Find the IRR of dated cashflows: the annual rate at which the NPV is 0.
+    """Find the annual rate at which the NPV of dated cashflows is 0.
 
-    This is Excel's ``XIRR``: the IRR measured on actual dates with an
-    actual/365 day count, so the result is an annual rate.
-
-    The root is found by bisection. It is slower than Newton's method but
-    cannot diverge: as long as the NPV changes sign between ``low`` and
-    ``high``, it always converges. With one outflow followed by inflows, as
-    here, there is exactly one root.
+    Matches Excel's ``XIRR`` (actual dates, actual/365). Bisection halves
+    ``low`` to ``high``, keeping the half where the NPV changes sign; unlike
+    Newton's method it cannot diverge, and one outflow followed by inflows
+    has exactly one IRR. No iteration limit is needed: ``tolerance`` must be
+    at least the float spacing (``math.ulp``) at the edge of the range, the
+    closest the two ends can ever get, so it is always reached.
 
     :param dates: Date of each cashflow.
     :param amounts: Amount of each cashflow, matching ``dates``.
     :param low: Lowest rate searched.
     :param high: Highest rate searched.
-    :param tolerance: Stop when the root is known to within this much.
-    :param max_iterations: Give up after this many halvings.
+    :param tolerance: Stop when the IRR is known to within this much; the
+        default ``1e-14`` keeps NAVs accurate to well under a cent.
     :returns: The IRR as a fraction (``0.1`` is 10%).
-    :raises ValueError: If the inputs are empty or of different lengths,
-        the cashflows are all one sign, no root lies between ``low`` and
-        ``high``, or the search does not converge.
+    :raises ValueError: If the inputs are empty, unequal in length or all
+        one sign; no IRR lies in the range; or ``tolerance`` is not finite,
+        below the float spacing, or not smaller than the range.
     """
     if len(dates) != len(amounts) or not dates:
         raise ValueError("dates and amounts must be non-empty and the same length")
     if not (any(a > 0 for a in amounts) and any(a < 0 for a in amounts)):
         raise ValueError("IRR needs at least one positive and one negative cashflow")
+    smallest = math.ulp(max(abs(low), abs(high)))
+    if not math.isfinite(tolerance):
+        raise ValueError(f"Tolerance must be a finite number, got {tolerance}")
+    if tolerance < smallest:
+        raise ValueError(
+            f"Tolerance must be at least {smallest:.2e}, the float precision "
+            f"between {low} and {high}; got {tolerance:.2e}"
+        )
+    if tolerance >= high - low:
+        raise ValueError(f"Tolerance must be smaller than the range {high - low}, got {tolerance}")
 
     npv_low = npv(low, dates, amounts)
     if npv_low * npv(high, dates, amounts) > 0:
         raise ValueError(f"No IRR found between {low:.0%} and {high:.0%}")
 
-    for iteration in range(1, max_iterations + 1):
+    iteration = 0
+    while True:
+        iteration += 1
         mid = (low + high) / 2
         npv_mid = npv(mid, dates, amounts)
         if npv_mid == 0 or (high - low) / 2 < tolerance:
-            logger.debug("XIRR converged to %.10f after %d iterations", mid, iteration)
+            logger.debug("XIRR converged to %.16f after %d iterations", mid, iteration)
             return mid
         if npv_low * npv_mid < 0:
             high = mid
         else:
             low, npv_low = mid, npv_mid
-    raise ValueError(f"XIRR did not converge in {max_iterations} iterations")
 
 
 def currency_irrs(cashflows: list[Cashflow]) -> dict[str, float]:
@@ -166,12 +176,6 @@ def fund_irr(cashflows: list[Cashflow]) -> float:
 
 
 # --- NAV ---------------------------------------------------------------------
-# Convention: NAV(t) includes the cashflow paid on date t, i.e. it is the value
-# just before that day's cashflow. This is the reading under which both of the
-# brief's sanity checks hold: at the first date the sum is the full NPV, which
-# is zero at the IRR; at the final date only the exit cashflow remains.
-#
-#     NAV(t) = sum over s >= t of  CF_s / (1 + r) ^ ((s - t) / 365)
 
 NAV_TOLERANCE = Decimal("0.01")  # one cent / penny
 
@@ -200,15 +204,17 @@ def nav_at(
     """
     one_plus_rate = 1 + Decimal(str(rate))
     nav = Decimal(0)
-    for d, amount in zip(dates, amounts):
-        if d > valuation_date or (include_same_day and d == valuation_date):
-            years = Decimal((d - valuation_date).days) / DAYS_IN_YEAR
+    for cashflow_date, amount in zip(dates, amounts):
+        if cashflow_date > valuation_date or (include_same_day and cashflow_date == valuation_date):
+            years = Decimal((cashflow_date - valuation_date).days) / DAYS_IN_YEAR
             nav += amount / one_plus_rate ** years
     return nav
 
 
-def nav_schedule(cashflows: list[Cashflow], currency: str, rate: float) -> list[NavPoint]:
-    """Build the NAV schedule for one currency.
+def nav_schedule_by_currency(cashflows: list[Cashflow], currency: str, rate: float) -> list[NavPoint]:
+    """Build the NAV schedule for one currency. Filter the rows keeping only the
+    cashflows in the given currency. Apply the nav_at function to each date
+    a cashflow is present for.
 
     :param cashflows: One fund's cashflows; other currencies are ignored.
     :param currency: Local currency to value.
@@ -243,11 +249,11 @@ def nav_schedules(
 
     :param cashflows: One fund's cashflows.
     :param irrs: IRR per currency, from :func:`currency_irrs`.
-    :returns: NAV schedule per currency.
+    :returns: NAV schedule per currency. Dictionary where each key is currency code.
     """
     schedules = {}
     for currency, rate in irrs.items():
-        schedule = nav_schedule(cashflows, currency, rate)
+        schedule = nav_schedule_by_currency(cashflows, currency, rate)
         if check_schedule(schedule, cashflows):
             logger.info("NAV %s: %d dates, passes sanity checks", currency, len(schedule))
         else:
