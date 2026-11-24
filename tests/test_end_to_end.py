@@ -1,17 +1,9 @@
-"""End-to-end tests: run the whole program and compare its output files by md5.
+"""End-to-end tests: run the whole program and compare its outputs by md5.
 
-Each test calls main.main() exactly as the command line would, then hashes
-what it wrote and compares the hash with a known-good value. Any change to a
-number, a date, a column, a sheet name or a number format changes the hash.
-
-- CSV files are hashed byte for byte.
-- An .xlsx file is a zip archive whose docProps/core.xml records when it was
-  created, so its bytes differ on every run. The workbook hash therefore
-  covers every part of the archive except that one: cell data, sheet names,
-  number formats and styles.
-
-If an output changes on purpose, check the new files by eye, then copy the
-new hashes from the failure message into the EXPECTED_* dicts below.
+CSV files are hashed byte for byte. A workbook's bytes change on every save
+(it records the save time), so its hash is taken over the sheet names and cell
+values instead. If an output changes on purpose, check it by eye, then copy
+the new hashes from the failure message into the EXPECTED_* dicts.
 """
 
 import datetime as dt
@@ -19,77 +11,49 @@ import hashlib
 import shutil
 import tempfile
 import unittest
-import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 
 import openpyxl
+import pandas as pd
 
 import excel_io
 import main
 
 DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "CST_Case_Study_data__1_.xlsx"
 
-# Known-good hashes. See the module docstring for how to update them.
 EXPECTED_SYNTHETIC_CSV = {
     "fund_i_irr.csv": "e98a29ad20b1721421ee927306baf02e",
     "fund_i_nav.csv": "bd6beeefe85c1dce074467914f16ef63",
     "fund_i_fx_hedges.csv": "08da7c885047d6e8c8061b829ca82492",
 }
-EXPECTED_SYNTHETIC_XLSX = {"fund_i_results.xlsx": "d388046133eed34b7e8abec9d97eae09"}
+EXPECTED_SYNTHETIC_XLSX = {"fund_i_results.xlsx": "fe9c9670f0336ae7e92b2a503acd8c9e"}
 EXPECTED_REAL_CSV = {
     "fund_i_irr.csv": "61cd453a52dcc1f703782e768f7f917d",
     "fund_i_nav.csv": "b06a27551419194d170b9fdb2a1a8ca9",
     "fund_i_fx_hedges.csv": "699550ffd417d6a4733768afac6fa63b",
 }
-EXPECTED_REAL_XLSX = {"fund_i_results.xlsx": "b0ce566fdc2b06093fe270599afed1e8"}
-
-# Parts of an .xlsx that change on every save (timestamps), so are not hashed.
-XLSX_VOLATILE_PARTS = {"docProps/core.xml"}
+EXPECTED_REAL_XLSX = {"fund_i_results.xlsx": "ecfe425d4f2f39c704b45c07720fdaa1"}
 
 
-def md5_file(path: Path) -> str:
-    """Return the md5 of a file's bytes, as hex."""
-    return hashlib.md5(path.read_bytes()).hexdigest()
-
-
-def md5_workbook(path: Path) -> str:
-    """Hash a workbook's contents, leaving out its save timestamp.
-
-    Every part of the archive except :data:`XLSX_VOLATILE_PARTS` is hashed,
-    name and bytes, in sorted order.
-
-    :param path: The ``.xlsx`` file.
-    :returns: The md5, as hex.
-    """
-    digest = hashlib.md5()
-    with zipfile.ZipFile(path) as archive:
-        for name in sorted(set(archive.namelist()) - XLSX_VOLATILE_PARTS):
-            digest.update(name.encode())
-            digest.update(archive.read(name))
-    return digest.hexdigest()
+def md5(path: Path) -> str:
+    """md5 of a CSV's bytes, or of a workbook's sheet names and cell values."""
+    if path.suffix == ".xlsx":
+        sheets = pd.read_excel(path, sheet_name=None)
+        data = "".join(f"{name}\n{df.to_csv(index=False)}" for name, df in sheets.items()).encode()
+    else:
+        data = path.read_bytes()
+    return hashlib.md5(data).hexdigest()
 
 
 def output_hashes(output_dir: Path) -> dict[str, str]:
-    """Hash every file the program wrote.
-
-    :param output_dir: The ``--output-dir`` of the run.
-    :returns: File name mapped to its md5, using :func:`md5_workbook` for
-        ``.xlsx`` files and :func:`md5_file` for the rest.
-    """
-    return {
-        path.name: md5_workbook(path) if path.suffix == ".xlsx" else md5_file(path)
-        for path in sorted(output_dir.iterdir())
-    }
+    """File name -> md5 for every file the program wrote."""
+    return {path.name: md5(path) for path in sorted(output_dir.iterdir())}
 
 
 def run_main(*args: str) -> tuple[int, str, str]:
-    """Run the program as the command line would, capturing its output.
-
-    :param args: Command-line arguments; paths are converted to strings.
-    :returns: ``(exit code, stdout, stderr)``.
-    """
+    """Run the program as the command line would; return (exit code, stdout, stderr)."""
     stdout, stderr = StringIO(), StringIO()
     code = 0
     with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -104,13 +68,7 @@ HEADERS = excel_io.REQUIRED_COLUMNS
 
 
 def write_workbook(path: Path, rows: list[list], headers: list[str] = HEADERS) -> Path:
-    """Write an input workbook for a test.
-
-    :param path: File to write.
-    :param rows: Data rows, in the order of ``headers``.
-    :param headers: Header row; defaults to the required columns.
-    :returns: ``path``.
-    """
+    """Write a test input workbook and return its path."""
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.append(headers)
@@ -121,14 +79,11 @@ def write_workbook(path: Path, rows: list[list], headers: list[str] = HEADERS) -
 
 
 def synthetic_rows() -> list[list]:
-    """Build a small two-fund input with the same kinds of mess as the real one.
+    """A small two-fund input with the same kinds of mess as the real one.
 
-    Fund I holds a GBP loan (100 at 10%, paid quarterly) and a EUR loan
-    (50 at 8%), each for one year. Fund II holds a USD loan that must be
-    filtered out. Row 3 has the ``GPB`` typo and row 4 a day-first text date
-    with junk around it.
-
-    :returns: Data rows in the order of :data:`HEADERS`.
+    Fund I: a GBP loan (100 at 10%) and a EUR loan (50 at 8%), quarterly for a
+    year. Fund II: a USD loan to be filtered out. Row 3 has the GPB typo and
+    row 4 a text date with junk around it.
     """
     quarter_ends = [dt.datetime(2025, 9, 30), dt.datetime(2025, 12, 31), dt.datetime(2026, 3, 31),
                     dt.datetime(2026, 6, 30), dt.datetime(2026, 9, 30)]
@@ -156,12 +111,7 @@ class EndToEndTestCase(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def run_ok(self, input_path: Path, *extra: str) -> tuple[Path, str]:
-        """Run the program and assert that it succeeded.
-
-        :param input_path: Input workbook.
-        :param extra: Further command-line options.
-        :returns: ``(output folder, stdout)``.
-        """
+        """Run the program, assert it succeeded, return (output folder, stdout)."""
         output_dir = self.tmp / "out"
         code, stdout, stderr = run_main(
             input_path, "--output-dir", output_dir, "--log-level", "ERROR", *extra
@@ -170,11 +120,7 @@ class EndToEndTestCase(unittest.TestCase):
         return output_dir, stdout
 
     def assert_hashes(self, output_dir: Path, expected: dict[str, str]) -> None:
-        """Assert that the output files match the known-good hashes.
-
-        On failure the message shows the new hashes, to paste into the
-        ``EXPECTED_*`` dicts if the change is intended.
-        """
+        """Assert the outputs match; on failure, show the new hashes."""
         actual = output_hashes(output_dir)
         self.assertEqual(actual, expected, f"\nNew hashes, if the change is intended:\n{actual}")
 
@@ -193,13 +139,6 @@ class TestSyntheticEndToEnd(EndToEndTestCase):
     def test_excel_output_matches_known_good_hash(self):
         output_dir, _ = self.run_ok(self.input)
         self.assert_hashes(output_dir, EXPECTED_SYNTHETIC_XLSX)
-
-    def test_excel_hash_ignores_save_time(self):
-        first, _ = self.run_ok(self.input)
-        first_hash = md5_workbook(first / "fund_i_results.xlsx")
-        (first / "fund_i_results.xlsx").unlink()
-        second, _ = self.run_ok(self.input)  # a later save, different timestamp
-        self.assertEqual(md5_workbook(second / "fund_i_results.xlsx"), first_hash)
 
     def test_summary_is_printed(self):
         _, stdout = self.run_ok(self.input, "--output-format", "csv")

@@ -25,17 +25,7 @@ def make_cashflow(
     fx: str = "1",
     cashflow_type: str = "Interest",
 ) -> Cashflow:
-    """Build one valid cashflow for Fund I, overriding only what a test needs.
-
-    :param base_currency: The fund's base currency.
-    :param date: Cashflow date.
-    :param currency: Local currency.
-    :param amount: Local amount; a string or int, so it converts to an exact
-        Decimal.
-    :param fx: Rate from local to base; the base amount is ``amount * fx``.
-    :param cashflow_type: Value for the ``Cashflow Type`` column.
-    :returns: The cashflow.
-    """
+    """One valid Fund I cashflow; ``amount_base`` is ``amount * fx``."""
     amount = Decimal(amount)
     return Cashflow(
         id=1, fund_name="Fund I", date=date, cashflow_type=cashflow_type,
@@ -50,18 +40,7 @@ def days(n: int) -> dt.date:
 
 
 def annual_bond(currency: str = "GBP", coupon: int = 10, years: int = 3, fx: str = "1"):
-    """Build a bond whose IRR is known exactly.
-
-    Invest 100, receive ``coupon`` every 365 days, and get 100 back with the
-    last coupon. The payments are exactly 365 days apart, so on an
-    actual/365 day count the IRR is exactly ``coupon`` percent.
-
-    :param currency: Local currency.
-    :param coupon: Annual coupon per 100 invested.
-    :param years: Number of years to maturity.
-    :param fx: Rate from local to base currency.
-    :returns: The bond's cashflows, in date order.
-    """
+    """Invest 100, get ``coupon`` every 365 days and 100 back: IRR is exactly ``coupon``%."""
     flows = [make_cashflow(date=D0, currency=currency, amount=-100, fx=fx, cashflow_type="Investment")]
     for year in range(1, years + 1):
         flows.append(make_cashflow(date=days(365 * year), currency=currency, amount=coupon, fx=fx))

@@ -9,11 +9,7 @@ from models import Cashflow
 
 
 def make_row(**overrides) -> dict:
-    """Build one raw row as pandas would read it, keyed by Excel header.
-
-    :param overrides: Columns to change, e.g. ``**{"Local Currency": "GPB"}``.
-    :returns: A row that passes validation unless an override breaks it.
-    """
+    """One valid raw row, keyed by Excel header, with ``overrides`` applied."""
     row = {
         "ID": 1,
         "Fund Name": "Fund I",

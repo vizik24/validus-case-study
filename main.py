@@ -1,9 +1,4 @@
-"""Command-line entry point.
-
-Parses the arguments, then runs each step in order: load the cashflows,
-calculate the IRRs, NAV schedules and hedges, print a summary and save the
-results. Run ``python main.py --help`` for the options.
-"""
+"""Command-line entry point: parse the options, then run each step in order."""
 
 import argparse
 import logging
@@ -20,13 +15,7 @@ LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
 
 
 def hedge_ratio(text: str) -> float:
-    """Parse ``--hedge-ratio``: a fraction of NAV between 0 and 1.
-
-    :param text: The argument as typed, e.g. ``"0.5"``.
-    :returns: The ratio as a float.
-    :raises argparse.ArgumentTypeError: If it is not a number or is outside
-        0 to 1. argparse turns this into a usage error.
-    """
+    """argparse type for ``--hedge-ratio``: a number from 0 to 1."""
     try:
         value = float(text)
     except ValueError:
@@ -37,13 +26,7 @@ def hedge_ratio(text: str) -> float:
 
 
 def positive_int(text: str) -> int:
-    """Parse ``--tenor-months``: a whole number of at least 1.
-
-    :param text: The argument as typed, e.g. ``"3"``.
-    :returns: The number as an int.
-    :raises argparse.ArgumentTypeError: If it is not a whole number or is
-        less than 1. argparse turns this into a usage error.
-    """
+    """argparse type for ``--tenor-months``: a whole number of at least 1."""
     try:
         value = int(text)
     except ValueError:
@@ -54,14 +37,9 @@ def positive_int(text: str) -> int:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the command-line arguments.
+    """Parse the options; the defaults reproduce the brief.
 
-    The defaults reproduce the brief: Fund I, a 100% hedge ratio and
-    3-month forwards, saved as an Excel workbook in ``output/``.
-
-    :param argv: Arguments to parse, without the program name. ``None``
-        means ``sys.argv[1:]``.
-    :returns: The parsed options.
+    :param argv: Arguments without the program name; ``None`` means ``sys.argv[1:]``.
     """
     parser = argparse.ArgumentParser(description="Fund IRR, NAV and FX hedge calculator")
     parser.add_argument("input", type=Path, help="Path to the cashflow Excel file (.xlsx or .xlsm)")
@@ -101,10 +79,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def configure_logging(level: str) -> None:
-    """Send log lines to stderr, so they never mix with printed results.
-
-    :param level: Level name, e.g. ``"INFO"`` or ``"DEBUG"``.
-    """
+    """Send log lines to stderr, so they never mix with printed results."""
     # force=True replaces any earlier set-up, so each call to main() (e.g. in
     # tests) uses its own level and the current stderr.
     logging.basicConfig(
@@ -113,16 +88,7 @@ def configure_logging(level: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run the whole program.
-
-    Errors the user can fix (a bad input file, invalid data, an unknown
-    fund, an output file that can't be written) are logged as one clear
-    message and end the run with exit code 1, without a traceback.
-
-    :param argv: Arguments, as for :func:`parse_args`.
-    :raises SystemExit: With code 1 on any of the errors above, or code 2
-        from argparse on a bad option.
-    """
+    """Run the program. Input, data and write errors exit with code 1, no traceback."""
     args = parse_args(argv)
     configure_logging(args.log_level)
     logger.info(
