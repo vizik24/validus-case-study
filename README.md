@@ -84,7 +84,10 @@ The 6 `Principal Repayment` rows were a cashflow type missing from the model, so
 - **Fund IRR:** uses the EUR amounts in the file. The FX rates there are fixed, so it is a blend of the currency IRRs and doesn't include FX moves.
 - **Hedges:**
     - Only GBP and USD are hedged, by selling them forward against EUR, the fund's base currency.
-    - Each notional is the NAV just *after* that day's cashflow; otherwise the first hedge would be 0.
+    - Each notional is the NAV just *after* that day's cashflow, so it will not match the NAV schedule on the same date. This is deliberate:
+        - The NAV schedule includes the cashflow on the valuation date, because the brief's two checks need it (NAV(0) = 0 and NAV on the final date = exit value).
+        - Sized on that NAV, the first hedge would be 0, leaving the first quarter unhedged. On later roll dates it would also hedge the coupon received that day, which has no FX exposure over the next period.
+        - So each hedge notional equals the NAV on the schedule minus the cashflow on that date. For example, GBP on 31 Dec 2025 is hedged at 99.92m, against a schedule NAV that includes the 2.5m coupon paid that day.
 - **Dates:**
     - Rolls are every 3 months from the first cashflow, keeping month-ends.
     - Dates that fall on weekends or holidays are moved with the modified-following rule, using both currencies' holiday calendars.
