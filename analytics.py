@@ -250,26 +250,10 @@ def check_schedule(
     )
     return start_ok and end_ok
 
-
 # --- FX hedging --------------------------------------------------------------
-# Strategy from the brief: 3-month rolling FX forwards covering 100% of NAV.
-#
-# - Only non-base currencies carry FX risk. The fund reports in EUR and is long
-#   its GBP and USD positions, so it sells those currencies forward for EUR.
-# - On each roll date a forward is traded with delivery `tenor_months` later.
-#   At delivery it settles and the next one is traded, sized to the new NAV.
-# - Notional = hedge_ratio x the NAV just AFTER that day's cashflow: the value
-#   still exposed over the coming period. (NAV including the day's cashflow is
-#   0 on the investment date, which would leave the first period unhedged.)
-# - Roll dates keep month-ends as month-ends, so they line up with the
-#   quarter-end cashflow dates. The last forward delivers on the final
-#   cashflow date.
-# - Trade and delivery dates are then moved to good business days with the
-#   modified-following convention, using the holidays of both currencies in
-#   the pair. Each forward still delivers on the day the next one is traded,
-#   and is still sized on the unadjusted roll date.
+# The brief's strategy: rolling FX forwards (3-month, 100% of NAV by default)
+# selling each non-base currency for the base currency.
 
-# Market quoting order for the allowed currencies: EURGBP, EURUSD, GBPUSD.
 PAIR_PRIORITY = ["EUR", "GBP", "USD"]
 NOTIONAL_STEP = Decimal("0.01")
 
